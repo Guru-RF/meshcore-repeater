@@ -1,4 +1,9 @@
 #include "tweetnacl.h"
+/* local addition: the vendored TweetNaCl FOR() macro mixes signed/unsigned loop
+ * counters; the comparisons are harmless, so quiet the -Wsign-compare noise. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#endif
 #define FOR(i,n) for (i = 0;i < n;++i)
 #define sv static void
 
