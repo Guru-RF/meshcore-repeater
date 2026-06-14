@@ -10,7 +10,20 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=c11
 CPPFLAGS += -D_GNU_SOURCE -Isrc
 PREFIX  ?= /usr/local
 
-LDLIBS_DAEMON = -lgpiod -lm
+# Auto-detect libgpiod (v1 on Bookworm, v2 on Trixie). v2 needs -DUSE_GPIOD_V2.
+GPIOD_VER    := $(shell pkg-config --modversion libgpiod 2>/dev/null)
+GPIOD_MAJOR  := $(firstword $(subst ., ,$(GPIOD_VER)))
+GPIOD_CFLAGS := $(shell pkg-config --cflags libgpiod 2>/dev/null)
+GPIOD_LIBS   := $(shell pkg-config --libs libgpiod 2>/dev/null)
+ifeq ($(GPIOD_LIBS),)
+  GPIOD_LIBS := -lgpiod
+endif
+ifeq ($(GPIOD_MAJOR),2)
+  CPPFLAGS += -DUSE_GPIOD_V2
+endif
+CPPFLAGS += $(GPIOD_CFLAGS)
+
+LDLIBS_DAEMON = $(GPIOD_LIBS) -lm
 LDLIBS_TEST   = -lm
 
 CORE_OBJ = \
