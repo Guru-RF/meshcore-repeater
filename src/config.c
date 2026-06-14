@@ -105,7 +105,16 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     }
     if (!strcasecmp(key, "tx_power")) {
         char *end = NULL; long p = strtol(val, &end, 10);
-        if (end == val || *end != '\0' || p < -9 || p > 22) return -2;
+        if (end == val || *end != '\0') return -2;
+        /* tx_power is the SX126x CHIP setpoint (max +22 dBm). The module's PA
+         * adds gain to reach ~+30 dBm at the antenna. If someone enters the
+         * antenna figure (e.g. 30), clamp to the chip max with a hint. */
+        if (p > 22 && p <= 40) {
+            log_warn("tx_power %ld is the antenna target; the SX126x chip maxes at "
+                     "+22 dBm and the module PA adds the rest (~+30 dBm). Clamping to 22.", p);
+            p = 22;
+        }
+        if (p < -9 || p > 22) return -2;
         cfg->tx_power = (int8_t)p; return 0;
     }
     if (!strcasecmp(key, "preamble")) {
