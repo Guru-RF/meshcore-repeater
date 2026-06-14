@@ -1,0 +1,13 @@
+# build artifacts
+meshcore-repeater
+selftest
+*.o
+
+# runtime identity (private key!) and local config overrides
+repeater.key
+*.key
+
+# editor / OS
+.DS_Store
+*.swp
+compile_commands.json

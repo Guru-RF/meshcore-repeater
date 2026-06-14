@@ -1,0 +1,17 @@
+[Unit]
+Description=MeshCore LoRa repeater (SX1268)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/meshcore-repeater -c /etc/meshcore-repeater.conf
+WorkingDirectory=/etc
+Restart=on-failure
+RestartSec=5
+# SPI/GPIO access: add the service user to the spi/gpio groups, or run as root.
+# User=meshcore
+# SupplementaryGroups=spi gpio
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target
