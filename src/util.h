@@ -51,4 +51,9 @@ static inline void wr_i32le(uint8_t *p, int32_t v)
 size_t bin2hex(const uint8_t *in, size_t n, char *out, size_t outsz);
 int    hex2bin(const char *in, uint8_t *out, size_t outsz);
 
+/* Decode standard base64 (with '=' padding) into out.
+ * Returns bytes decoded, or -1 on invalid input / overflow.  Used for channel
+ * PSKs, which MeshCore shares in base64 (e.g. "izOH6cXN6mrJ5e26oRXNcg=="). */
+int    base64_decode(const char *in, uint8_t *out, size_t outsz);
+
 #endif /* MC_UTIL_H */

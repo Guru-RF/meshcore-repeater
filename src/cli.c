@@ -53,6 +53,8 @@ void cli_banner(const cli_ctx_t *ctx)
     printf("  %.3f MHz  SF%u  BW%g kHz  CR4/%u  chip %d dBm  sync 0x%04X\n",
            ctx->cfg->frequency, ctx->cfg->spreading_factor, ctx->cfg->bandwidth,
            ctx->cfg->coding_rate, ctx->cfg->tx_power, ctx->cfg->sync_word);
+    printf("  policy: forward public-only, %d public channel(s) - adverts always, "
+           "private msgs dropped\n", ctx->cfg->n_public_channels);
     printf("  type 'help' for commands.\n\n");
     fflush(stdout);
 }
@@ -68,6 +70,7 @@ static void cmd_help(void)
         "  set <key> <value>    change a config value (radio keys apply live)\n"
         "  freq <MHz>           shortcut for 'set frequency' (e.g. freq 434.0)\n"
         "  neighbors            list heard nodes\n"
+        "  channels             list configured public channels (forwarded)\n"
         "  advert               send a self-advert now\n"
         "  save                 write config back to file\n"
         "  reload               reload config file (hardware keys need restart)\n"
@@ -98,6 +101,10 @@ static void cmd_status(cli_ctx_t *ctx)
     printf("forward   : flood %llu  direct %llu  dropped %llu  trace %llu\n",
            (unsigned long long)s->fwd_flood, (unsigned long long)s->fwd_direct,
            (unsigned long long)s->fwd_dropped, (unsigned long long)s->trace_seen);
+    printf("policy    : grp-public %llu  denied %llu (dm %llu grp %llu other %llu) mac-fail %llu\n",
+           (unsigned long long)s->fwd_grp_public, (unsigned long long)s->fwd_denied,
+           (unsigned long long)s->fwd_denied_dm, (unsigned long long)s->fwd_denied_grp,
+           (unsigned long long)s->fwd_denied_other, (unsigned long long)s->grp_mac_fail);
     printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu\n",
            (unsigned long long)s->tx_total, (unsigned long long)s->tx_cad_busy,
            (unsigned long long)s->tx_queue_full, (unsigned long long)s->adverts_sent);
@@ -128,6 +135,21 @@ static void cmd_neighbors(cli_ctx_t *ctx)
     fflush(stdout);
 }
 
+static void cmd_channels(cli_ctx_t *ctx)
+{
+    const mc_config_t *c = ctx->cfg;
+    printf("public channels (%d) - group messages are forwarded ONLY on these:\n",
+           c->n_public_channels);
+    if (c->n_public_channels == 0)
+        printf("  (none - forwarding adverts only; all group + private traffic dropped)\n");
+    for (int i = 0; i < c->n_public_channels; i++) {
+        const mc_pub_channel_t *ch = &c->public_channels[i];
+        printf("  [%d] hash 0x%02X  %u-bit  %s\n", i, ch->hash,
+               (unsigned)(ch->secret_len * 8), ch->name[0] ? ch->name : "-");
+    }
+    fflush(stdout);
+}
+
 void cli_handle_line(cli_ctx_t *ctx, const char *line)
 {
     char buf[256];
@@ -145,6 +167,8 @@ void cli_handle_line(cli_ctx_t *ctx, const char *line)
         cmd_status(ctx);
     } else if (!strcasecmp(cmd, "neighbors") || !strcasecmp(cmd, "neighbours")) {
         cmd_neighbors(ctx);
+    } else if (!strcasecmp(cmd, "channels")) {
+        cmd_channels(ctx);
     } else if (!strcasecmp(cmd, "advert")) {
         mesh_send_advert(ctx->mesh);
     } else if (!strcasecmp(cmd, "get")) {

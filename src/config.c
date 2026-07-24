@@ -1,6 +1,8 @@
 /* config.c - load / save / get / set the repeater configuration. */
 #include "config.h"
 #include "log.h"
+#include "util.h"
+#include "crypto/sha256.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +80,64 @@ static bool parse_double(const char *v, double *out)
         return false;
     *out = x;
     return true;
+}
+
+/* Parse a "public_channel = [name:]<base64-or-hex-psk>" value and append it to
+ * the list. Returns 0 (added or a harmless duplicate), or -2 on a bad value. */
+static int add_public_channel(mc_config_t *cfg, const char *val)
+{
+    if (cfg->n_public_channels >= MC_MAX_PUBLIC_CHANNELS)
+        return -2;
+
+    /* optional friendly name before the FIRST ':' */
+    char name[24] = {0};
+    const char *psk = val;
+    const char *colon = strchr(val, ':');
+    if (colon) {
+        size_t nl = (size_t)(colon - val);
+        if (nl >= sizeof(name)) nl = sizeof(name) - 1;
+        memcpy(name, val, nl);
+        psk = colon + 1;
+    }
+
+    /* hex if it is all hex digits and 32/64 chars (16/32 bytes); else base64 */
+    size_t pl = strlen(psk);
+    bool ishex = (pl == 32 || pl == 64);
+    for (size_t i = 0; ishex && i < pl; i++) {
+        char c = psk[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+            ishex = false;
+    }
+    uint8_t secret[32];
+    int len = ishex ? hex2bin(psk, secret, sizeof(secret))
+                    : base64_decode(psk, secret, sizeof(secret));
+    if (len != 16 && len != 32)
+        return -2;
+
+    /* dedup by secret so a reload (which re-reads the same file) is idempotent */
+    for (int i = 0; i < cfg->n_public_channels; i++) {
+        if (cfg->public_channels[i].secret_len == (uint8_t)len &&
+            memcmp(cfg->public_channels[i].secret, secret, (size_t)len) == 0)
+            return 0;
+    }
+
+    mc_pub_channel_t *ch = &cfg->public_channels[cfg->n_public_channels];
+    memset(ch, 0, sizeof(*ch));
+    memcpy(ch->secret, secret, (size_t)len);   /* bytes [len..31] stay zero */
+    ch->secret_len = (uint8_t)len;
+    snprintf(ch->name, sizeof(ch->name), "%s", name);
+
+    /* channel hash = SHA256(secret, len)[0]; hash EXACTLY the raw key bytes
+     * (a 16-byte PSK must not be zero-padded to 32 before hashing). */
+    SHA256_CTX c;
+    uint8_t digest[SHA256_BLOCK_SIZE];
+    sha256_init(&c);
+    sha256_update(&c, ch->secret, (size_t)len);
+    sha256_final(&c, digest);
+    ch->hash = digest[0];
+
+    cfg->n_public_channels++;
+    return 0;
 }
 
 int config_set(mc_config_t *cfg, const char *key, const char *val)
@@ -164,6 +224,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "location")) { if (!parse_bool(val, &b)) return -2; cfg->has_location = b; return 0; }
     if (!strcasecmp(key, "advert_interval")) { if (!parse_u32(val, &u)) return -2; cfg->advert_interval = u; return 0; }
     if (!strcasecmp(key, "forward")) { if (!parse_bool(val, &b)) return -2; cfg->forward = b; return 0; }
+    if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
 
     return -1; /* unknown key */
 }
@@ -202,6 +263,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "location"))         { snprintf(out, outsz, "%s", cfg->has_location ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "advert_interval"))  { snprintf(out, outsz, "%u", cfg->advert_interval); return 0; }
     if (!strcasecmp(key, "forward"))          { snprintf(out, outsz, "%s", cfg->forward ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     return -1;
 }
 
@@ -210,6 +272,10 @@ int config_load(mc_config_t *cfg, const char *path)
     FILE *f = fopen(path, "r");
     if (!f)
         return -1;
+
+    /* public_channel is a list, not a scalar: the file is authoritative, so
+     * clear it before (re)reading rather than accumulating across reloads. */
+    cfg->n_public_channels = 0;
 
     char line[1024];
     int lineno = 0;
@@ -273,6 +339,17 @@ int config_save(const mc_config_t *cfg, const char *path)
     for (int i = 0; KEYS[i]; i++) {
         if (config_get(cfg, KEYS[i], buf, sizeof(buf)) == 0)
             fprintf(f, "%-18s = %s\n", KEYS[i], buf);
+    }
+    /* public_channel is a repeatable list; emit one line each (hex form, so no
+     * base64 encoder is needed - it round-trips through hex2bin on load). */
+    for (int i = 0; i < cfg->n_public_channels; i++) {
+        const mc_pub_channel_t *ch = &cfg->public_channels[i];
+        char hex[65];
+        bin2hex(ch->secret, ch->secret_len, hex, sizeof(hex));
+        if (ch->name[0])
+            fprintf(f, "%-18s = %s:%s\n", "public_channel", ch->name, hex);
+        else
+            fprintf(f, "%-18s = %s\n", "public_channel", hex);
     }
     fclose(f);
     return 0;

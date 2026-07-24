@@ -5,6 +5,7 @@
 #include "hal.h"
 #include "log.h"
 #include "util.h"
+#include "hmac_sha256.h"
 
 #include <string.h>
 #include <time.h>
@@ -75,6 +76,89 @@ static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority, uint
     log_warn("mesh: TX queue full, dropping packet (type=%u)", pkt_payload_type(pkt));
 }
 
+/* ---- strict ham content policy: forward public, drop private ---- */
+typedef enum {
+    FWD_OK_PUBLIC,        /* advert / trace (already sig-checked upstream) */
+    FWD_OK_GRP_PUBLIC,    /* group message on a configured public channel */
+    FWD_DROP_DM,          /* private pairwise-encrypted unicast */
+    FWD_DROP_GRP_UNMATCHED,/* group message on an unconfigured channel */
+    FWD_DROP_GRP_MACFAIL, /* channel hash matched but the MAC did not verify */
+    FWD_DROP_OTHER,       /* ack / control / multipart / raw / unknown types */
+} fwd_decision_t;
+
+/*
+ * Decide whether a received packet may be retransmitted. Amateur-radio rules
+ * forbid relaying content whose meaning is obscured, so this is a strict
+ * allow-list with a fail-safe DROP default:
+ *   - ADVERT (Ed25519-signed plaintext) and TRACE (plaintext) -> forward.
+ *   - GRP_TXT/GRP_DATA -> forward only if the packet's channel MAC verifies
+ *     against a configured PUBLIC channel (published key => not obscured). The
+ *     MAC is HMAC-SHA256(secret, ciphertext)[0..1]; no decryption is needed.
+ *   - everything else (private unicast, unknown channels, unknown types) -> drop.
+ */
+static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pkt)
+{
+    switch (pkt_payload_type(pkt)) {
+    case PAYLOAD_TYPE_ADVERT:   /* signature already verified in mesh_on_recv */
+    case PAYLOAD_TYPE_TRACE:    /* plaintext */
+        return FWD_OK_PUBLIC;
+
+    case PAYLOAD_TYPE_GRP_TXT:
+    case PAYLOAD_TYPE_GRP_DATA: {
+        /* payload = [channel_hash:1][MAC:2][AES-128 ciphertext]; min 1+2+16 */
+        if (pkt->payload_len < 19)
+            return FWD_DROP_GRP_UNMATCHED;
+        uint8_t chash      = pkt->payload[0];
+        const uint8_t *mac = &pkt->payload[1];
+        const uint8_t *ct  = &pkt->payload[3];
+        size_t ctlen       = (size_t)pkt->payload_len - 3;
+        bool hash_seen = false;
+        for (int i = 0; i < m->cfg->n_public_channels; i++) {
+            const mc_pub_channel_t *ch = &m->cfg->public_channels[i];
+            if (ch->hash != chash)
+                continue;
+            hash_seen = true;
+            uint8_t h[32];
+            hmac_sha256(ch->secret, sizeof(ch->secret), ct, ctlen, h);
+            if (h[0] == mac[0] && h[1] == mac[1])
+                return FWD_OK_GRP_PUBLIC;      /* proven public content */
+        }
+        return hash_seen ? FWD_DROP_GRP_MACFAIL : FWD_DROP_GRP_UNMATCHED;
+    }
+
+    case PAYLOAD_TYPE_REQ:
+    case PAYLOAD_TYPE_RESPONSE:
+    case PAYLOAD_TYPE_TXT_MSG:
+    case PAYLOAD_TYPE_ANON_REQ:
+    case PAYLOAD_TYPE_PATH:
+        return FWD_DROP_DM;                    /* pairwise-encrypted private unicast */
+
+    default:                                   /* ack/multipart/control/raw/unknown */
+        return FWD_DROP_OTHER;
+    }
+}
+
+/* Returns true if the packet is allowed to forward; bumps the policy stats. */
+static bool policy_permits(mc_mesh_t *m, const mc_packet_t *pkt)
+{
+    switch (classify_forward(m, pkt)) {
+    case FWD_OK_PUBLIC:
+        return true;
+    case FWD_OK_GRP_PUBLIC:
+        m->stats.fwd_grp_public++;
+        return true;
+    case FWD_DROP_DM:
+        m->stats.fwd_denied++; m->stats.fwd_denied_dm++; return false;
+    case FWD_DROP_GRP_UNMATCHED:
+        m->stats.fwd_denied++; m->stats.fwd_denied_grp++; return false;
+    case FWD_DROP_GRP_MACFAIL:
+        m->stats.fwd_denied++; m->stats.fwd_denied_grp++; m->stats.grp_mac_fail++; return false;
+    case FWD_DROP_OTHER:
+    default:
+        m->stats.fwd_denied++; m->stats.fwd_denied_other++; return false;
+    }
+}
+
 void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
                   int16_t rssi_dbm, int8_t snr_q)
 {
@@ -117,6 +201,10 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     }
 
     if (!m->cfg->forward)
+        return;
+
+    /* ham content policy: relay only provably-public traffic, drop the rest */
+    if (!policy_permits(m, &pkt))
         return;
 
     if (pkt_is_route_flood(&pkt)) {

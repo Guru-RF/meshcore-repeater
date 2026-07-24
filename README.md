@@ -173,11 +173,46 @@ repeater interoperates with stock nodes:
 | `use_cad` | `true` | listen-before-talk |
 | `advert_interval` | `7200` | seconds between self-adverts (0 = off) |
 | `name` | `HamRepeater` | advertised node name |
+| `public_channel` | *(none)* | a public channel key to relay (repeatable) — see below |
 
 > To interoperate with other MeshCore nodes, **`bandwidth`, `spreading_factor`,
 > `coding_rate` and `sync_word` must match them.** Only change `frequency` (and
 > the matching params on your other nodes) to move your ham mesh off a busy
 > channel.
+
+### Content policy — forward public, drop private
+
+Amateur radio forbids relaying messages whose meaning is obscured, so this
+repeater does **not** relay encrypted private traffic. It applies a strict
+allow-list and drops anything not provably public:
+
+| MeshCore payload | relayed? | why |
+|------------------|----------|-----|
+| Advert | ✅ | Ed25519-**signed** but plaintext (readable), verified before relay |
+| Trace | ✅ | plaintext |
+| Group message on a **configured public channel** | ✅ | key is published → not obscured |
+| Direct/private message (DM, request, ACK, path…) | ❌ | end-to-end encrypted → obscured |
+| Group message on any other channel | ❌ | unknown key → obscured |
+
+A group message is relayed only if its channel **MAC verifies** against one of
+your configured public channels (MeshCore's `HMAC-SHA256`, checked without
+decrypting). Declare each public channel by its **published** key — base64 or
+hex, 16- or 32-byte, optional `name:` label; repeatable:
+
+```
+public_channel = izOH6cXN6mrJ5e26oRXNcg==            # MeshCore default "Public"
+public_channel = MyClub:8b3387e9c5cdea6ac9e5edbaa115cd72   # hex, named
+```
+
+With **no** `public_channel` entries the repeater relays adverts only (all group
+and private traffic is dropped) — a valid ADVERT-only beacon. `channels` in the
+CLI lists what's configured; `status` shows the `policy:` counters
+(`grp-public`, `denied`, `mac-fail`).
+
+> Only configure channels whose key is genuinely **published to the public** —
+> that published key is what makes relaying the traffic legal. The repeater
+> proves a message belongs to a configured channel, but it cannot judge whether
+> *you* were entitled to call that key public.
 
 ### Local CLI
 

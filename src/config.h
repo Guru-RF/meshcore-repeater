@@ -14,6 +14,17 @@
 #include "sx126x.h"
 #include "hal.h"
 
+#define MC_MAX_PUBLIC_CHANNELS 8
+
+/* A public MeshCore channel the operator has declared forwardable. The AES key
+ * is PUBLISHED, so relaying its group messages does not obscure meaning. */
+typedef struct {
+    char     name[24];        /* optional friendly label */
+    uint8_t  secret[32];      /* channel PSK, zero-padded (16-byte keys use [0..15]) */
+    uint8_t  secret_len;      /* 16 (AES-128) or 32 */
+    uint8_t  hash;            /* SHA256(secret, secret_len)[0] = on-air channel selector */
+} mc_pub_channel_t;
+
 typedef struct {
     /* ---- radio ---- */
     double   frequency;          /* MHz */
@@ -47,6 +58,12 @@ typedef struct {
     double   latitude, longitude;
     uint32_t advert_interval;    /* seconds between self-adverts (0 = disabled) */
     bool     forward;            /* act as a repeater (allow packet forwarding) */
+
+    /* ---- ham content policy ----
+     * Strict "forward public, drop private": only adverts, traces and group
+     * messages on one of these declared PUBLIC channels are retransmitted. */
+    mc_pub_channel_t public_channels[MC_MAX_PUBLIC_CHANNELS];
+    int              n_public_channels;
 } mc_config_t;
 
 void config_defaults(mc_config_t *cfg);

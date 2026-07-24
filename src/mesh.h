@@ -10,8 +10,10 @@
  *   - emit periodic signed self-adverts (type REPEATER)
  *   - keep stats + a neighbour table for the local CLI
  *
- * The repeater forwards by ROUTE type and never decrypts payloads, so ACKs,
- * text messages, requests, etc. all relay correctly without any keys.
+ * The repeater never decrypts payloads. Under the strict ham content policy it
+ * forwards only what is provably NOT obscured: signed adverts, plaintext traces
+ * and group messages on a configured PUBLIC channel (verified by the channel
+ * MAC). Private unicast (DMs/requests) and unknown-key channels are dropped.
  */
 #ifndef MC_MESH_H
 #define MC_MESH_H
@@ -37,6 +39,13 @@ typedef struct {
     uint64_t fwd_direct;
     uint64_t fwd_dropped;     /* path full / forwarding disabled */
     uint64_t trace_seen;
+    /* ham content policy (strict "forward public, drop private") */
+    uint64_t fwd_grp_public;  /* group messages relayed on a public channel */
+    uint64_t fwd_denied;      /* total packets dropped by the policy */
+    uint64_t fwd_denied_dm;   /*   ...private unicast (req/resp/txt/anon/path) */
+    uint64_t fwd_denied_grp;  /*   ...group message on a non-public channel */
+    uint64_t fwd_denied_other;/*   ...ack/control/multipart/raw/unknown */
+    uint64_t grp_mac_fail;    /* channel-hash matched a public chan but MAC failed */
     uint64_t tx_total;
     uint64_t tx_cad_busy;
     uint64_t tx_queue_full;

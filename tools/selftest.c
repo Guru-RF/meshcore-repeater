@@ -13,6 +13,8 @@
 #include "../src/config.h"
 #include "../src/sx126x.h"
 #include "../src/util.h"
+#include "../src/hmac_sha256.h"
+#include "../src/crypto/sha256.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -148,6 +150,22 @@ static void test_advert(void)
     CHECK(!mc_advert_verify(&p, pub), "forged advert rejected");
 }
 
+/* Build a GRP_TXT packet on cfg's first public channel with a valid MAC. */
+static void make_public_grp(const mc_config_t *cfg, uint8_t route, mc_packet_t *p)
+{
+    static const uint8_t ct[16] = "grouptext-12345";   /* stand-in ciphertext */
+    uint8_t mac[32];
+    hmac_sha256(cfg->public_channels[0].secret, 32, ct, sizeof(ct), mac);
+
+    memset(p, 0, sizeof(*p));
+    p->header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, route);
+    p->payload[0] = cfg->public_channels[0].hash;   /* channel selector (0x11 for Public) */
+    p->payload[1] = mac[0];
+    p->payload[2] = mac[1];
+    memcpy(&p->payload[3], ct, sizeof(ct));
+    p->payload_len = 3 + sizeof(ct);                /* 19 */
+}
+
 static void test_mesh_flood(void)
 {
     printf("[mesh flood forwarding + dedup]\n");
@@ -155,6 +173,9 @@ static void test_mesh_flood(void)
     mc_identity_generate(&id);
     mc_config_t cfg;
     config_defaults(&cfg);
+    CHECK(config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==") == 0 &&
+          cfg.n_public_channels == 1 && cfg.public_channels[0].hash == 0x11,
+          "default Public channel configured (hash 0x11)");
 
     /* init radio (mock HAL) so airtime calc works */
     sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio);
@@ -163,13 +184,11 @@ static void test_mesh_flood(void)
     mc_mesh_t mesh;
     mesh_init(&mesh, &id, &cfg);
 
-    /* craft an inbound flood TXT_MSG with one hop already in the path */
-    mc_packet_t p = {0};
-    p.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_TXT_MSG, ROUTE_TYPE_FLOOD);
+    /* craft an inbound flood public-channel group message with one hop in path */
+    mc_packet_t p;
+    make_public_grp(&cfg, ROUTE_TYPE_FLOOD, &p);
     p.path_len = 0x01;          /* 1 hop, 1-byte hash */
     p.path[0] = 0x42;
-    p.payload_len = 8;
-    memcpy(p.payload, "abcdefgh", 8);
 
     uint8_t raw[MC_MAX_TRANS_UNIT];
     int n = pkt_serialize(&p, raw, sizeof(raw));
@@ -177,6 +196,7 @@ static void test_mesh_flood(void)
     mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
     CHECK(mesh.stats.fwd_flood == 1, "first copy forwarded (fwd_flood=%llu)",
           (unsigned long long)mesh.stats.fwd_flood);
+    CHECK(mesh.stats.fwd_grp_public == 1, "counted as a public-channel forward");
 
     /* the queued packet should have our hash appended as a 2nd hop */
     int found = -1;
@@ -203,17 +223,16 @@ static void test_mesh_direct(void)
     mc_identity_generate(&id);
     mc_config_t cfg;
     config_defaults(&cfg);
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
     sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
     mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
 
-    /* direct packet whose first path hash is us, then a downstream node */
-    mc_packet_t p = {0};
-    p.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_TXT_MSG, ROUTE_TYPE_DIRECT);
+    /* direct public-channel packet whose first path hash is us, then downstream */
+    mc_packet_t p;
+    make_public_grp(&cfg, ROUTE_TYPE_DIRECT, &p);
     p.path_len = 0x02;          /* 2 hops, 1-byte */
     p.path[0] = id.pub[0];      /* us */
     p.path[1] = 0x99;           /* next hop */
-    p.payload_len = 4;
-    memcpy(p.payload, "ping", 4);
 
     uint8_t raw[MC_MAX_TRANS_UNIT];
     int n = pkt_serialize(&p, raw, sizeof(raw));
@@ -228,6 +247,87 @@ static void test_mesh_direct(void)
         CHECK(pkt_path_hash_count(q) == 1 && q->path[0] == 0x99,
               "self stripped, next hop now at path[0]");
     }
+}
+
+static void test_mesh_policy(void)
+{
+    printf("[mesh strict public-only content policy]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    mc_config_t cfg; config_defaults(&cfg);
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
+    uint8_t raw[MC_MAX_TRANS_UNIT];
+    int n;
+
+    /* 1. a private direct message must be dropped */
+    mc_packet_t dm = {0};
+    dm.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_TXT_MSG, ROUTE_TYPE_FLOOD);
+    dm.payload_len = 20;
+    memcpy(dm.payload, "a-private-direct-msg", 20);
+    n = pkt_serialize(&dm, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
+    CHECK(mesh.stats.fwd_flood == 0 && mesh.stats.fwd_denied_dm == 1,
+          "private DM dropped (denied_dm=%llu)", (unsigned long long)mesh.stats.fwd_denied_dm);
+
+    /* 2. a group message on an UNKNOWN channel must be dropped */
+    mc_packet_t g = {0};
+    g.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_FLOOD);
+    g.payload[0] = 0x77;                 /* not the Public 0x11 */
+    memset(&g.payload[1], 0xAB, 18);
+    g.payload_len = 19;
+    n = pkt_serialize(&g, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
+    CHECK(mesh.stats.fwd_denied_grp == 1 && mesh.stats.fwd_flood == 0,
+          "group msg on unconfigured channel dropped");
+
+    /* 3. Public channel hash but a corrupted MAC must be dropped (mac-fail) */
+    mc_packet_t b;
+    make_public_grp(&cfg, ROUTE_TYPE_FLOOD, &b);
+    b.payload[1] ^= 0xFF;                /* break the MAC deterministically */
+    n = pkt_serialize(&b, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
+    CHECK(mesh.stats.grp_mac_fail == 1 && mesh.stats.fwd_flood == 0,
+          "public-hash + bad MAC dropped (mac-fail)");
+
+    /* 4. an unknown / non-allow-listed payload type must be dropped */
+    mc_packet_t u = {0};
+    u.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_CONTROL, ROUTE_TYPE_FLOOD);
+    u.payload_len = 10;
+    memset(u.payload, 1, 10);
+    n = pkt_serialize(&u, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
+    CHECK(mesh.stats.fwd_denied_other == 1, "control/unknown type dropped");
+
+    CHECK(mesh.stats.fwd_flood == 0 && mesh.stats.fwd_grp_public == 0,
+          "nothing forwarded under strict policy in this test");
+    CHECK(mesh.stats.fwd_denied == 4, "all four packets counted as denied");
+}
+
+static void test_crypto(void)
+{
+    printf("[crypto: hmac-sha256, channel hash, base64]\n");
+
+    /* HMAC-SHA256, RFC 4231 test case 2 */
+    uint8_t out[32], exp[32];
+    hmac_sha256((const uint8_t *)"Jefe", 4,
+                (const uint8_t *)"what do ya want for nothing?", 28, out);
+    hex2bin("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            exp, sizeof(exp));
+    CHECK(memcmp(out, exp, 32) == 0, "HMAC-SHA256 matches RFC 4231 test case 2");
+
+    /* the default Public PSK: base64 -> 16 bytes -> channel hash 0x11 */
+    uint8_t psk[32], pskhex[16];
+    int len = base64_decode("izOH6cXN6mrJ5e26oRXNcg==", psk, sizeof(psk));
+    hex2bin("8b3387e9c5cdea6ac9e5edbaa115cd72", pskhex, sizeof(pskhex));
+    CHECK(len == 16 && memcmp(psk, pskhex, 16) == 0,
+          "base64 decodes Public PSK to the 16 expected bytes");
+
+    SHA256_CTX c; uint8_t d[SHA256_BLOCK_SIZE];
+    sha256_init(&c); sha256_update(&c, psk, 16); sha256_final(&c, d);
+    CHECK(d[0] == 0x11, "Public channel hash byte == 0x11 (got 0x%02X)", d[0]);
+
+    CHECK(base64_decode("bad*chars==", psk, sizeof(psk)) == -1, "base64 rejects bad input");
 }
 
 static void test_airtime(void)
@@ -275,6 +375,21 @@ static void test_config(void)
     /* radio config projection carries the DIO2 flag */
     sx126x_cfg_t radio; config_to_sx126x(&w, &radio);
     CHECK(radio.dio2_rf_switch == true, "config_to_sx126x carries dio2_rf_switch");
+
+    /* public channel parsing: base64 + hex, hash derivation, dedup, validation */
+    mc_config_t pc; config_defaults(&pc);
+    CHECK(pc.n_public_channels == 0, "no public channels by default");
+    CHECK(config_set(&pc, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==") == 0 &&
+          pc.n_public_channels == 1 && pc.public_channels[0].hash == 0x11 &&
+          pc.public_channels[0].secret_len == 16,
+          "public_channel base64 PSK -> hash 0x11, 16 bytes");
+    CHECK(config_set(&pc, "public_channel", "Club:8b3387e9c5cdea6ac9e5edbaa115cd72") == 0 &&
+          pc.n_public_channels == 1,
+          "same key via hex (named) is deduped -> still 1 channel");
+    CHECK(config_set(&pc, "public_channel", "0011223344556677889900aabbccddee") == 0 &&
+          pc.n_public_channels == 2, "a distinct hex key adds a 2nd channel");
+    CHECK(config_set(&pc, "public_channel", "deadbeef") == -2,
+          "reject a wrong-length channel key");
 }
 
 int main(void)
@@ -287,6 +402,8 @@ int main(void)
     test_advert();
     test_mesh_flood();
     test_mesh_direct();
+    test_mesh_policy();
+    test_crypto();
     test_airtime();
     test_config();
 
