@@ -165,7 +165,7 @@ repeater interoperates with stock nodes:
 | key | default | meaning |
 |-----|---------|---------|
 | `frequency` | `433.500` | MHz — keep clear of LoRa-APRS (~433.775) |
-| `bandwidth` | `250` | kHz |
+| `bandwidth` | `250` | kHz — one of 62.5 / 125 / 250 / 500 |
 | `spreading_factor` | `10` | |
 | `coding_rate` | `5` | 4/5 |
 | `tx_power` | `22` | SX1268 **chip** dBm (PA adds gain → ~+30 dBm) |

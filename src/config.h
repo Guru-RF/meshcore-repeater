@@ -17,7 +17,7 @@
 typedef struct {
     /* ---- radio ---- */
     double   frequency;          /* MHz */
-    uint16_t bandwidth;          /* kHz (125/250/500) */
+    double   bandwidth;          /* kHz (62.5/125/250/500) */
     uint8_t  spreading_factor;   /* 5..12 */
     uint8_t  coding_rate;        /* 5..8 (=4/5..4/8) */
     int8_t   tx_power;           /* SX1268 chip dBm (-9..22) */

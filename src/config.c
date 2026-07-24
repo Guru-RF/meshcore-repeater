@@ -92,8 +92,9 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
         cfg->frequency = d; return 0;
     }
     if (!strcasecmp(key, "bandwidth")) {
-        if (!parse_u32(val, &u) || (u != 125 && u != 250 && u != 500)) return -2;
-        cfg->bandwidth = (uint16_t)u; return 0;
+        if (!parse_double(val, &d) ||
+            (d != 62.5 && d != 125.0 && d != 250.0 && d != 500.0)) return -2;
+        cfg->bandwidth = d; return 0;
     }
     if (!strcasecmp(key, "spreading_factor")) {
         if (!parse_u32(val, &u) || u < 5 || u > 12) return -2;
@@ -170,7 +171,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
 int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
 {
     if (!strcasecmp(key, "frequency"))        { snprintf(out, outsz, "%.3f", cfg->frequency); return 0; }
-    if (!strcasecmp(key, "bandwidth"))        { snprintf(out, outsz, "%u", cfg->bandwidth); return 0; }
+    if (!strcasecmp(key, "bandwidth"))        { snprintf(out, outsz, "%g", cfg->bandwidth); return 0; }
     if (!strcasecmp(key, "spreading_factor")) { snprintf(out, outsz, "%u", cfg->spreading_factor); return 0; }
     if (!strcasecmp(key, "coding_rate"))      { snprintf(out, outsz, "%u", cfg->coding_rate); return 0; }
     if (!strcasecmp(key, "tx_power"))         { snprintf(out, outsz, "%d", cfg->tx_power); return 0; }

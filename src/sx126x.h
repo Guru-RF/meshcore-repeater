@@ -15,7 +15,7 @@
 
 typedef struct {
     double   freq_mhz;       /* e.g. 433.5 */
-    uint16_t bw_khz;         /* 250 to match MeshCore */
+    double   bw_khz;         /* 62.5/125/250/500; 250 to match MeshCore */
     uint8_t  sf;             /* 5..12 (MeshCore default 10) */
     uint8_t  cr;             /* coding rate denominator 5..8 (4/5..4/8) */
     int8_t   power_dbm;      /* chip output power -9..22 */

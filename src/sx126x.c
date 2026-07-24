@@ -72,7 +72,8 @@
 #define IRQ_TIMEOUT       0x0200
 #define IRQ_ALL           0x03FF
 
-/* LoRa bandwidth byte codes */
+/* LoRa bandwidth byte codes (SX126x datasheet 13.4.5.2) */
+#define LORA_BW_062 0x03
 #define LORA_BW_125 0x04
 #define LORA_BW_250 0x05
 #define LORA_BW_500 0x06
@@ -205,13 +206,15 @@ static int sx_set_standby(uint8_t mode)
 /* configuration helpers                                               */
 /* ------------------------------------------------------------------ */
 
-static uint8_t bw_code(uint16_t bw_khz)
+static uint8_t bw_code(double bw_khz)
 {
-    switch (bw_khz) {
-        case 125: return LORA_BW_125;
-        case 250: return LORA_BW_250;
-        case 500: return LORA_BW_500;
-        default:  return LORA_BW_250;
+    /* compare in Hz to handle the fractional 62.5 kHz cleanly */
+    switch ((uint32_t)(bw_khz * 1000.0 + 0.5)) {
+        case 62500:  return LORA_BW_062;
+        case 125000: return LORA_BW_125;
+        case 250000: return LORA_BW_250;
+        case 500000: return LORA_BW_500;
+        default:     return LORA_BW_250;
     }
 }
 
@@ -392,7 +395,7 @@ int sx126x_init(const sx126x_cfg_t *cfg)
         return rc;
     }
 
-    log_info("sx126x: init ok - %.3f MHz SF%u BW%u CR4/%u %d dBm (chip) sync=0x%04X rf-switch=%s tcxo=%.2fV",
+    log_info("sx126x: init ok - %.3f MHz SF%u BW%g CR4/%u %d dBm (chip) sync=0x%04X rf-switch=%s tcxo=%.2fV",
              g_cfg.freq_mhz, g_cfg.sf, g_cfg.bw_khz, g_cfg.cr, g_cfg.power_dbm,
              g_cfg.sync_word, g_cfg.dio2_rf_switch ? "DIO2" : "RXEN/TXEN", g_cfg.tcxo_voltage);
     return 0;

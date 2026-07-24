@@ -39,7 +39,7 @@ static int apply_radio(cli_ctx_t *ctx)
         printf("WARNING: radio retune failed (rc=%d) - radio may be in a bad state\n", rc);
         return rc;
     }
-    log_info("radio reconfigured: %.3f MHz SF%u BW%u CR4/%u %ddBm",
+    log_info("radio reconfigured: %.3f MHz SF%u BW%g CR4/%u %ddBm",
              ctx->cfg->frequency, ctx->cfg->spreading_factor,
              ctx->cfg->bandwidth, ctx->cfg->coding_rate, ctx->cfg->tx_power);
     return 0;
@@ -50,7 +50,7 @@ void cli_banner(const cli_ctx_t *ctx)
     char hash[16];
     bin2hex(ctx->id->pub, 4, hash, sizeof(hash));
     printf("\nMeshCore repeater  '%s'  node-id %s\n", ctx->cfg->name, hash);
-    printf("  %.3f MHz  SF%u  BW%u kHz  CR4/%u  chip %d dBm  sync 0x%04X\n",
+    printf("  %.3f MHz  SF%u  BW%g kHz  CR4/%u  chip %d dBm  sync 0x%04X\n",
            ctx->cfg->frequency, ctx->cfg->spreading_factor, ctx->cfg->bandwidth,
            ctx->cfg->coding_rate, ctx->cfg->tx_power, ctx->cfg->sync_word);
     printf("  type 'help' for commands.\n\n");
@@ -87,7 +87,7 @@ static void cmd_status(cli_ctx_t *ctx)
            (unsigned long long)(up_s / 3600),
            (unsigned long long)((up_s % 3600) / 60),
            (unsigned long long)(up_s % 60));
-    printf("radio     : %.3f MHz SF%u BW%u CR4/%u chip %ddBm sync 0x%04X cad %s fwd %s\n",
+    printf("radio     : %.3f MHz SF%u BW%g CR4/%u chip %ddBm sync 0x%04X cad %s fwd %s\n",
            ctx->cfg->frequency, ctx->cfg->spreading_factor, ctx->cfg->bandwidth,
            ctx->cfg->coding_rate, ctx->cfg->tx_power, ctx->cfg->sync_word,
            ctx->cfg->use_cad ? "on" : "off", ctx->cfg->forward ? "on" : "off");

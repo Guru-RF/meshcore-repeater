@@ -255,6 +255,11 @@ static void test_config(void)
     CHECK(config_set(&cfg, "sync_word", "public") == 0 && cfg.sync_word == 0x3444,
           "sync_word public -> 0x3444");
     CHECK(config_set(&cfg, "bogus", "x") == -1, "unknown key rejected");
+    CHECK(config_set(&cfg, "bandwidth", "62.5") == 0 && cfg.bandwidth == 62.5,
+          "accept fractional bandwidth 62.5 kHz");
+    CHECK(config_set(&cfg, "bandwidth", "500") == 0 && cfg.bandwidth == 500.0,
+          "accept bandwidth 500 kHz");
+    CHECK(config_set(&cfg, "bandwidth", "62") == -2, "reject unsupported bandwidth 62 kHz");
 
     /* schematic-matched wiring defaults */
     mc_config_t w; config_defaults(&w);
