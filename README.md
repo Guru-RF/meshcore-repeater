@@ -145,6 +145,8 @@ exit), `-h` help.
 
 ### Install as a service
 
+**System-wide** (binary in `/usr/local/bin`, config in `/etc`):
+
 ```
 sudo make install
 sudoedit /etc/meshcore-repeater.conf
@@ -153,6 +155,22 @@ sudo systemctl enable --now meshcore-repeater
 
 (Grant SPI/GPIO access by adding the service user to the `spi`/`gpio` groups, or
 run as root.)
+
+**Run-in-place** (run as an unprivileged user straight from the checkout — no
+`make install`): use [`contrib/meshcore-repeater.service`](contrib/meshcore-repeater.service).
+Edit `User=` and the paths for your setup, then:
+
+```
+sudo cp contrib/meshcore-repeater.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now meshcore-repeater
+journalctl -u meshcore-repeater -f            # watch it run
+```
+
+The service user must be in the `spi` and `gpio` groups. Running as a service is
+**headless** — the interactive stdin CLI is unavailable (`StandardInput=null`);
+manage it with `systemctl`/`journalctl` and `systemctl restart` after editing the
+config. Add `-v` to `ExecStart` (or `systemctl edit`) for verbose journal logging.
 
 ---
 

@@ -1,0 +1,27 @@
+# Run-in-place systemd unit: the repeater runs as an unprivileged user straight
+# from a git checkout (no `make install`). Adjust User= and the three paths below
+# for your setup, then:
+#   sudo cp contrib/meshcore-repeater.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now meshcore-repeater
+#
+# The user must be in the `spi` and `gpio` groups for SPI/GPIO access.
+# Run as a service is headless (no interactive stdin CLI); use journalctl for logs
+# and `systemctl restart` after editing the config. Add -v to ExecStart (or a
+# drop-in) for verbose journal logging.
+
+[Unit]
+Description=MeshCore LoRa repeater (SX1268, ham public-only policy)
+
+[Service]
+Type=simple
+User=ure
+SupplementaryGroups=spi gpio
+WorkingDirectory=/home/ure/meshcore-repeater
+ExecStart=/home/ure/meshcore-repeater/meshcore-repeater -c /home/ure/meshcore-repeater/meshcore-repeater.conf
+Restart=always
+RestartSec=5
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target
