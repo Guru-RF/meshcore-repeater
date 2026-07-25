@@ -312,8 +312,9 @@ src/
   hal_linux.c     spidev + libgpiod + timing + RNG (the real HAL)
   config.[ch]     config file parse + runtime get/set
   cli.[ch]        local operator console
+  hmac_sha256.[ch] HMAC-SHA256 (public-channel MAC verify)
   log.[ch], util.[ch]
-  crypto/         vendored TweetNaCl (Ed25519/SHA-512) + B-Con SHA-256
+  crypto/         vendored TweetNaCl (Ed25519/SHA-512) + B-Con SHA-256 + tiny-AES-128
 tools/
   selftest.c      host unit tests       mock_hal.c   no-hardware HAL
 ```
@@ -323,5 +324,8 @@ tools/
 - Protocol & forwarding logic ported from
   [MeshCore](https://github.com/meshcore-dev/MeshCore) (the C++ original).
 - Inspired by [pyMC_Repeater](https://github.com/pyMC-dev/pyMC_Repeater).
-- Vendored crypto: [TweetNaCl](https://tweetnacl.cr.yp.to/) (public domain) and
-  Brad Conte's [SHA-256](https://github.com/B-Con/crypto-algorithms) (public domain).
+- Vendored crypto: [TweetNaCl](https://tweetnacl.cr.yp.to/) (public domain),
+  Brad Conte's [SHA-256](https://github.com/B-Con/crypto-algorithms) (public
+  domain), and [tiny-AES-c](https://github.com/kokke/tiny-AES-c) (public domain).
+- **Licence:** this project's own code is [MIT](LICENSE); the vendored crypto
+  above keeps its own public-domain terms.
