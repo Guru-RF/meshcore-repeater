@@ -145,32 +145,32 @@ exit), `-h` help.
 
 ### Install as a service
 
-**System-wide** (binary in `/usr/local/bin`, config in `/etc`):
+`sudo make install` does it all in one go: creates a dedicated `meshcore` system
+user, installs the binary, config and systemd unit **self-contained under
+`/opt/meshcore-repeater`** (the generated `repeater.key` lands there too), and
+reloads systemd. Then review the config and enable it:
 
 ```
 sudo make install
-sudoedit /etc/meshcore-repeater.conf
-sudo systemctl enable --now meshcore-repeater
-```
-
-(Grant SPI/GPIO access by adding the service user to the `spi`/`gpio` groups, or
-run as root.)
-
-**Run-in-place** (run as an unprivileged user straight from the checkout — no
-`make install`): use [`contrib/meshcore-repeater.service`](contrib/meshcore-repeater.service).
-Edit `User=` and the paths for your setup, then:
-
-```
-sudo cp contrib/meshcore-repeater.service /etc/systemd/system/
-sudo systemctl daemon-reload
+sudoedit /opt/meshcore-repeater/meshcore-repeater.conf
 sudo systemctl enable --now meshcore-repeater
 journalctl -u meshcore-repeater -f            # watch it run
 ```
 
-The service user must be in the `spi` and `gpio` groups. Running as a service is
-**headless** — the interactive stdin CLI is unavailable (`StandardInput=null`);
-manage it with `systemctl`/`journalctl` and `systemctl restart` after editing the
-config. Add `-v` to `ExecStart` (or `systemctl edit`) for verbose journal logging.
+- Hardware access comes from the unit's `SupplementaryGroups=spi gpio`, so those
+  groups must exist (they do on Raspberry Pi OS); the `meshcore` user needs no
+  login and no extra setup.
+- `make install` **won't overwrite** an existing `/opt/meshcore-repeater/meshcore-repeater.conf`,
+  so upgrades keep your settings — rebuild and re-run `sudo make install`, then
+  `sudo systemctl restart meshcore-repeater`.
+- Running as a service is **headless** — the interactive stdin CLI is unavailable
+  (`StandardInput=null`); manage it with `systemctl`/`journalctl`, and
+  `systemctl restart` after editing the config. Add `-v` to `ExecStart`
+  (via `sudo systemctl edit meshcore-repeater`) for verbose journal logging.
+- `sudo make uninstall` removes the service (leaving `/opt` data + the user).
+
+To run in place for development instead (interactive CLI, no install), just
+`./meshcore-repeater -v` from the checkout.
 
 ---
 

@@ -2,13 +2,17 @@
 #
 #   make            build the daemon (Linux/RPi; needs libgpiod-dev)
 #   make test       build + run the host self-test (no hardware needed)
-#   make install    install binary + systemd unit (run as root)
+#   make install    create the meshcore user, install to /opt + systemd unit (root)
+#   make uninstall  remove the service (keeps /opt data + user)
 #   make clean
 
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11
 CPPFLAGS += -D_GNU_SOURCE -Isrc
-PREFIX  ?= /usr/local
+
+# install layout: self-contained under /opt, run by a dedicated system user
+INSTALL_DIR  ?= /opt/meshcore-repeater
+SERVICE_USER ?= meshcore
 
 # Auto-detect libgpiod (v1 on Bookworm, v2 on Trixie). v2 needs -DUSE_GPIOD_V2.
 GPIOD_VER    := $(shell pkg-config --modversion libgpiod 2>/dev/null)
@@ -55,13 +59,37 @@ selftest: $(TEST_OBJ)
 test: selftest
 	./selftest
 
+# One-shot install: dedicated user, binary + config + service all under /opt.
+# Run as root (sudo make install). Hardware access comes from the unit's
+# SupplementaryGroups=spi gpio, so those groups must exist.
 install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
-	install -Dm644 meshcore-repeater.conf $(DESTDIR)/etc/meshcore-repeater.conf
-	install -Dm644 meshcore-repeater.service $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
-	@echo "edit /etc/meshcore-repeater.conf, then: systemctl enable --now meshcore-repeater"
+	getent group $(SERVICE_USER) >/dev/null || groupadd --system $(SERVICE_USER)
+	id -u $(SERVICE_USER) >/dev/null 2>&1 || useradd --system --gid $(SERVICE_USER) \
+	  --no-create-home --home-dir $(INSTALL_DIR) --shell /usr/sbin/nologin $(SERVICE_USER)
+	install -d -o $(SERVICE_USER) -g $(SERVICE_USER) -m 750 $(DESTDIR)$(INSTALL_DIR)
+	install -m 755 $(BIN) $(DESTDIR)$(INSTALL_DIR)/$(BIN)
+	@if [ -f $(DESTDIR)$(INSTALL_DIR)/meshcore-repeater.conf ]; then \
+	  echo ">> keeping existing $(INSTALL_DIR)/meshcore-repeater.conf"; \
+	else \
+	  install -m 644 -o $(SERVICE_USER) -g $(SERVICE_USER) meshcore-repeater.conf \
+	    $(DESTDIR)$(INSTALL_DIR)/meshcore-repeater.conf; \
+	  echo ">> installed default config to $(INSTALL_DIR)/meshcore-repeater.conf"; \
+	fi
+	install -Dm 644 meshcore-repeater.service $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
+	@systemctl daemon-reload 2>/dev/null || true
+	@echo ""
+	@echo "Installed: runs as '$(SERVICE_USER)' from $(INSTALL_DIR) (config + key live there too)."
+	@echo "Review $(INSTALL_DIR)/meshcore-repeater.conf, then enable at boot + start:"
+	@echo "  sudo systemctl enable --now meshcore-repeater"
+
+uninstall:
+	-systemctl disable --now meshcore-repeater 2>/dev/null
+	rm -f $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
+	-systemctl daemon-reload 2>/dev/null
+	@echo "service removed. Left $(INSTALL_DIR) and user '$(SERVICE_USER)' in place;"
+	@echo "to fully purge: sudo rm -rf $(INSTALL_DIR) && sudo userdel $(SERVICE_USER)"
 
 clean:
 	rm -f $(DAEMON_OBJ) $(TEST_OBJ) $(BIN) selftest
 
-.PHONY: all test install clean
+.PHONY: all test install uninstall clean

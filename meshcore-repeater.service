@@ -1,16 +1,18 @@
+# Installed by `make install` to /etc/systemd/system/. Runs the repeater as the
+# dedicated 'meshcore' system user, self-contained under /opt/meshcore-repeater
+# (binary, config and the generated repeater.key all live there).
 [Unit]
-Description=MeshCore LoRa repeater (SX1268)
-After=network.target
+Description=MeshCore LoRa repeater (SX1268, ham public-only policy)
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/meshcore-repeater -c /etc/meshcore-repeater.conf
-WorkingDirectory=/etc
-Restart=on-failure
+User=meshcore
+SupplementaryGroups=spi gpio
+WorkingDirectory=/opt/meshcore-repeater
+ExecStart=/opt/meshcore-repeater/meshcore-repeater -c /opt/meshcore-repeater/meshcore-repeater.conf
+Restart=always
 RestartSec=5
-# SPI/GPIO access: add the service user to the spi/gpio groups, or run as root.
-# User=meshcore
-# SupplementaryGroups=spi gpio
+# headless: no interactive stdin CLI when run as a service (use journalctl)
 StandardInput=null
 
 [Install]
