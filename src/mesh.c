@@ -148,6 +148,26 @@ static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pk
     }
 }
 
+static const char *payload_type_name(uint8_t pt)
+{
+    switch (pt) {
+    case PAYLOAD_TYPE_REQ:        return "REQ";
+    case PAYLOAD_TYPE_RESPONSE:   return "RESPONSE";
+    case PAYLOAD_TYPE_TXT_MSG:    return "TXT_MSG";
+    case PAYLOAD_TYPE_ACK:        return "ACK";
+    case PAYLOAD_TYPE_ADVERT:     return "ADVERT";
+    case PAYLOAD_TYPE_GRP_TXT:    return "GRP_TXT";
+    case PAYLOAD_TYPE_GRP_DATA:   return "GRP_DATA";
+    case PAYLOAD_TYPE_ANON_REQ:   return "ANON_REQ";
+    case PAYLOAD_TYPE_PATH:       return "PATH";
+    case PAYLOAD_TYPE_TRACE:      return "TRACE";
+    case PAYLOAD_TYPE_MULTIPART:  return "MULTIPART";
+    case PAYLOAD_TYPE_CONTROL:    return "CONTROL";
+    case PAYLOAD_TYPE_RAW_CUSTOM: return "RAW_CUSTOM";
+    default:                      return "?";
+    }
+}
+
 static const char *decision_reason(fwd_decision_t d)
 {
     switch (d) {
@@ -427,10 +447,16 @@ void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
     if (n > 0) {
         uint32_t airtime = sx126x_airtime_ms((size_t)n);
         int rc = sx126x_transmit(raw, (size_t)n, airtime + 1000);
-        if (rc == 0)
+        if (rc == 0) {
             m->stats.tx_total++;
-        else
+            if (m->cfg->verbose)
+                log_info("[tx] %s %s %dB %uhop airtime %ums",
+                         payload_type_name(pkt_payload_type(&e->pkt)),
+                         pkt_is_route_flood(&e->pkt) ? "flood" : "direct",
+                         n, pkt_path_hash_count(&e->pkt), airtime);
+        } else {
             log_warn("mesh: TX failed (rc=%d, len=%d)", rc, n);
+        }
     }
     e->used = false; /* one shot - drop on serialise failure too */
 }

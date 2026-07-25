@@ -232,9 +232,10 @@ so you learn both that the repeater is alive and how well it received you.
 ### Verbose (`-v`)
 
 Run with `-v` to log activity as it happens: decrypted **public** messages
-(`[public …]`), received **adverts** with name/type/GPS (`[advert …]`), and
-every packet the policy **drops** with the reason (`[ignored …]`). Private
-traffic is still never decrypted — only public-channel content is shown.
+(`[public …]`), received **adverts** with name/type/GPS (`[advert …]`), every
+packet the policy **drops** with the reason (`[ignored …]`), and every packet
+the repeater **transmits** (`[tx] <type> <flood|direct> <bytes> <hops> airtime`).
+Private traffic is still never decrypted — only public-channel content is shown.
 
 ### Local CLI
 
