@@ -236,10 +236,14 @@ static int channel_build_txt(const mc_pub_channel_t *ch, const char *sender,
     return 0;
 }
 
-static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch)
+static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, int8_t snr_q)
 {
+    /* report the signal we heard the ping at, so it doubles as a coverage check */
+    char txt[48];
+    snprintf(txt, sizeof(txt), "pong rssi %ddBm snr %.1fdB", rssi, snr_q / 4.0);
+
     mc_packet_t pkt;
-    if (channel_build_txt(ch, m->cfg->name, "pong", (uint32_t)time(NULL), &pkt) != 0)
+    if (channel_build_txt(ch, m->cfg->name, txt, (uint32_t)time(NULL), &pkt) != 0)
         return;
     /* record our own message so its echo is treated as a duplicate */
     uint8_t hash[MC_MAX_HASH_SIZE];
@@ -247,7 +251,8 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch)
     seen_check_and_add(m, hash);
     enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50);       /* small jitter */
     m->stats.pong_sent++;
-    log_info("mesh: ping -> pong on channel '%s'", ch->name[0] ? ch->name : "-");
+    log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
+             rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
 }
 
 /* Verbose display + ping/pong handling for an allowed public group message. */
@@ -271,7 +276,7 @@ static void handle_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         const char *body = grp_message_body(plain, plen);
         if (body && is_ping(body)) {
             m->stats.ping_seen++;
-            send_pong(m, ch);
+            send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);
         }
     }
 }

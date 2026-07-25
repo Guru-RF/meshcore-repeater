@@ -364,8 +364,9 @@ static void test_ping_pong(void)
         uint8_t dec[64]; memcpy(dec, &q->payload[3], ctl);
         aes128_ctx_t ac; aes128_init(&ac, ch->secret);
         aes128_ecb_decrypt(&ac, dec, ctl); dec[ctl] = 0;
-        CHECK(strstr((const char *)&dec[5], ": pong") != NULL,
-              "pong plaintext is '<name>: pong' (got '%s')", (const char *)&dec[5]);
+        /* ping was heard at rssi -70, snr_q 20 (= 5.0 dB) */
+        CHECK(strstr((const char *)&dec[5], ": pong rssi -70dBm snr 5.0dB") != NULL,
+              "pong reports the ping's rssi/snr (got '%s')", (const char *)&dec[5]);
     }
 
     /* a non-ping public message must NOT trigger a pong */

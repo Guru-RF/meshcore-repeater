@@ -218,9 +218,16 @@ CLI lists what's configured; `status` shows the `policy:` counters
 ### Ping/pong
 
 With `ping_pong = true` (and at least one `public_channel`), sending `ping` on a
-public channel makes the repeater reply `pong` on that same channel — a quick
+public channel makes the repeater reply on that same channel — a quick
 liveness/coverage check. It decrypts only public-channel text (using the
-published key), matches an exact `ping`, and answers as `<name>: pong`.
+published key), matches an exact `ping`, and broadcasts back the signal it heard
+your ping at:
+
+```
+<name>: pong rssi -95dBm snr 7.5dB
+```
+
+so you learn both that the repeater is alive and how well it received you.
 
 ### Verbose (`-v`)
 
