@@ -73,6 +73,7 @@ static void cmd_help(void)
         "  freq <MHz>           shortcut for 'set frequency' (e.g. freq 434.0)\n"
         "  neighbors            list heard nodes\n"
         "  channels             list configured public channels (forwarded)\n"
+        "  blacklist [add|remove|list] <name>   ignore a node by name\n"
         "  advert               send a self-advert now\n"
         "  save                 write config back to file\n"
         "  reload               reload config file (hardware keys need restart)\n"
@@ -111,6 +112,8 @@ static void cmd_status(cli_ctx_t *ctx)
            ctx->cfg->ping_pong ? "on" : "off",
            (unsigned long long)s->ping_seen, (unsigned long long)s->pong_sent,
            ctx->cfg->verbose ? "on" : "off");
+    printf("blacklist : %d entries  ignored %llu   control port %u\n",
+           ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
     printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu\n",
            (unsigned long long)s->tx_total, (unsigned long long)s->tx_cad_busy,
            (unsigned long long)s->tx_queue_full, (unsigned long long)s->adverts_sent);
@@ -156,6 +159,36 @@ static void cmd_channels(cli_ctx_t *ctx)
     fflush(stdout);
 }
 
+static void cmd_blacklist(cli_ctx_t *ctx, const char *sub, const char *name)
+{
+    mc_config_t *c = ctx->cfg;
+
+    if (!sub || !strcasecmp(sub, "list")) {
+        printf("blacklist (%d) - these node names are ignored:\n", c->n_blacklist);
+        if (c->n_blacklist == 0)
+            printf("  (empty)\n");
+        for (int i = 0; i < c->n_blacklist; i++)
+            printf("  %s\n", c->blacklist[i]);
+        fflush(stdout);
+        return;
+    }
+
+    if (!strcasecmp(sub, "add")) {
+        if (!name) { printf("usage: blacklist add <name>\n"); fflush(stdout); return; }
+        int rc = config_blacklist_add(c, name);
+        if (rc == 0)      { config_save(c, ctx->config_path); printf("blacklisted '%s' (saved)\n", name); }
+        else if (rc == 1) printf("'%s' already blacklisted\n", name);
+        else              printf("blacklist full (max %d) or empty name\n", MC_MAX_BLACKLIST);
+    } else if (!strcasecmp(sub, "remove") || !strcasecmp(sub, "rm") || !strcasecmp(sub, "del")) {
+        if (!name) { printf("usage: blacklist remove <name>\n"); fflush(stdout); return; }
+        if (config_blacklist_remove(c, name) == 0) { config_save(c, ctx->config_path); printf("removed '%s' (saved)\n", name); }
+        else printf("'%s' not in blacklist\n", name);
+    } else {
+        printf("usage: blacklist [add|remove|list] <name>\n");
+    }
+    fflush(stdout);
+}
+
 void cli_handle_line(cli_ctx_t *ctx, const char *line)
 {
     char buf[256];
@@ -175,6 +208,11 @@ void cli_handle_line(cli_ctx_t *ctx, const char *line)
         cmd_neighbors(ctx);
     } else if (!strcasecmp(cmd, "channels")) {
         cmd_channels(ctx);
+    } else if (!strcasecmp(cmd, "blacklist")) {
+        char *sub = strtok(NULL, " \t\r\n");
+        char *name = strtok(NULL, "\r\n");
+        if (name) { while (*name == ' ' || *name == '\t') name++; }
+        cmd_blacklist(ctx, sub, name);
     } else if (!strcasecmp(cmd, "advert")) {
         mesh_send_advert(ctx->mesh);
     } else if (!strcasecmp(cmd, "get")) {

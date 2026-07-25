@@ -53,6 +53,58 @@ void config_defaults(mc_config_t *cfg)
     cfg->forward         = true;
     cfg->ping_pong       = false;      /* opt-in: answer public "ping" with "pong" */
     cfg->verbose         = false;      /* set at runtime by the -v flag */
+    cfg->control_port    = 4403;       /* local control interface on 127.0.0.1 (0 = off) */
+}
+
+/* ---- blacklist helpers ---- */
+static void trim_name(const char *in, char *out, size_t outsz)
+{
+    while (*in == ' ' || *in == '\t') in++;
+    snprintf(out, outsz, "%s", in);
+    size_t n = strlen(out);
+    while (n > 0 && (out[n-1] == ' ' || out[n-1] == '\t' || out[n-1] == '\r' || out[n-1] == '\n'))
+        out[--n] = '\0';
+}
+
+int config_blacklist_add(mc_config_t *cfg, const char *name)
+{
+    char clean[MC_BLACKLIST_NAME_LEN];
+    trim_name(name, clean, sizeof(clean));
+    if (clean[0] == '\0')
+        return -1;
+    for (int i = 0; i < cfg->n_blacklist; i++)
+        if (!strcasecmp(cfg->blacklist[i], clean))
+            return 1;                              /* already present */
+    if (cfg->n_blacklist >= MC_MAX_BLACKLIST)
+        return -1;                                 /* full */
+    snprintf(cfg->blacklist[cfg->n_blacklist], MC_BLACKLIST_NAME_LEN, "%s", clean);
+    cfg->n_blacklist++;
+    return 0;
+}
+
+int config_blacklist_remove(mc_config_t *cfg, const char *name)
+{
+    char clean[MC_BLACKLIST_NAME_LEN];
+    trim_name(name, clean, sizeof(clean));
+    for (int i = 0; i < cfg->n_blacklist; i++) {
+        if (!strcasecmp(cfg->blacklist[i], clean)) {
+            for (int j = i; j < cfg->n_blacklist - 1; j++)
+                memcpy(cfg->blacklist[j], cfg->blacklist[j+1], MC_BLACKLIST_NAME_LEN);
+            cfg->n_blacklist--;
+            return 0;
+        }
+    }
+    return -1;                                     /* not found */
+}
+
+bool config_is_blacklisted(const mc_config_t *cfg, const char *name)
+{
+    if (!name || name[0] == '\0')
+        return false;
+    for (int i = 0; i < cfg->n_blacklist; i++)
+        if (!strcasecmp(cfg->blacklist[i], name))
+            return true;
+    return false;
 }
 
 /* ---- value parsers ---- */
@@ -227,7 +279,9 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "advert_interval")) { if (!parse_u32(val, &u)) return -2; cfg->advert_interval = u; return 0; }
     if (!strcasecmp(key, "forward")) { if (!parse_bool(val, &b)) return -2; cfg->forward = b; return 0; }
     if (!strcasecmp(key, "ping_pong")) { if (!parse_bool(val, &b)) return -2; cfg->ping_pong = b; return 0; }
+    if (!strcasecmp(key, "control_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->control_port = (uint16_t)u; return 0; }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
+    if (!strcasecmp(key, "blacklist")) { return config_blacklist_add(cfg, val) < 0 ? -2 : 0; }
 
     return -1; /* unknown key */
 }
@@ -267,7 +321,9 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "advert_interval"))  { snprintf(out, outsz, "%u", cfg->advert_interval); return 0; }
     if (!strcasecmp(key, "forward"))          { snprintf(out, outsz, "%s", cfg->forward ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
+    if (!strcasecmp(key, "blacklist"))        { snprintf(out, outsz, "%d entries", cfg->n_blacklist); return 0; }
     return -1;
 }
 
@@ -277,9 +333,10 @@ int config_load(mc_config_t *cfg, const char *path)
     if (!f)
         return -1;
 
-    /* public_channel is a list, not a scalar: the file is authoritative, so
-     * clear it before (re)reading rather than accumulating across reloads. */
+    /* public_channel and blacklist are lists, not scalars: the file is
+     * authoritative, so clear them before (re)reading rather than accumulating. */
     cfg->n_public_channels = 0;
+    cfg->n_blacklist = 0;
 
     char line[1024];
     int lineno = 0;
@@ -337,7 +394,7 @@ int config_save(const mc_config_t *cfg, const char *path)
         "spi_dev", "spi_speed", "gpio_chip", "gpio_reset", "gpio_busy", "gpio_dio1",
         "gpio_nss", "rf_switch", "gpio_rxen", "gpio_txen", "use_leds", "gpio_led_on",
         "gpio_led_data", "name", "key_file", "location", "latitude",
-        "longitude", "advert_interval", "forward", "ping_pong", NULL
+        "longitude", "advert_interval", "forward", "ping_pong", "control_port", NULL
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {
@@ -355,6 +412,9 @@ int config_save(const mc_config_t *cfg, const char *path)
         else
             fprintf(f, "%-18s = %s\n", "public_channel", hex);
     }
+    /* blacklist entries (also a repeatable list) */
+    for (int i = 0; i < cfg->n_blacklist; i++)
+        fprintf(f, "%-18s = %s\n", "blacklist", cfg->blacklist[i]);
     fclose(f);
     return 0;
 }

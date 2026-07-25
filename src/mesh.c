@@ -275,20 +275,42 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
 }
 
-/* Verbose display + ping/pong handling for an allowed public group message. */
-static void handle_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
-                              const mc_pub_channel_t *ch)
+/* Copy the self-reported sender name (the text before the first ": "). */
+static void grp_sender_name(const uint8_t *plain, char *out, size_t outsz)
+{
+    const char *text = (const char *)&plain[5];
+    const char *sep = strstr(text, ": ");
+    size_t n = sep ? (size_t)(sep - text) : 0;
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, text, n);
+    out[n] = '\0';
+}
+
+/* Verbose display, blacklist check and ping/pong for an allowed public group
+ * message. Returns false if the sender is blacklisted (drop, do not forward). */
+static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
+                               const mc_pub_channel_t *ch)
 {
     if (pkt_payload_type(pkt) != PAYLOAD_TYPE_GRP_TXT) {
         if (m->cfg->verbose)
             log_info("[public %s] <data, %u bytes>", ch->name[0] ? ch->name : "-",
                      (unsigned)pkt->payload_len);
-        return;
+        return true;                    /* can't read a sender; forward */
     }
     uint8_t plain[MC_MAX_PACKET_PAYLOAD];
     int plen = channel_decrypt(ch, pkt, plain, sizeof(plain));
     if (plen < 5)
-        return;
+        return true;                    /* undecodable; forward as-is */
+
+    char sender[MC_BLACKLIST_NAME_LEN];
+    grp_sender_name(plain, sender, sizeof(sender));
+    if (config_is_blacklisted(m->cfg, sender)) {
+        m->stats.blacklisted++;
+        if (m->cfg->verbose)
+            log_info("[ignored] blacklisted '%s' on %s", sender, ch->name[0] ? ch->name : "-");
+        return false;                   /* drop: no forward, no pong */
+    }
+
     if (m->cfg->verbose)
         log_info("[public %s] %s", ch->name[0] ? ch->name : "-", (const char *)&plain[5]);
 
@@ -299,6 +321,7 @@ static void handle_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
             send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);
         }
     }
+    return true;
 }
 
 void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
@@ -330,12 +353,18 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             log_debug("mesh: dropped advert with bad signature");
             return; /* forged - do not propagate */
         }
+        uint8_t atype = 0; char aname[32];
+        mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
+        if (config_is_blacklisted(m->cfg, aname)) {
+            m->stats.blacklisted++;
+            if (m->cfg->verbose)
+                log_info("[ignored] blacklisted advert '%s'", aname);
+            return; /* don't register as a neighbour, don't re-flood */
+        }
         m->stats.rx_advert++;
         neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
         if (m->cfg->verbose) {
-            uint8_t atype = 0; char aname[32];
             double lat, lon;
-            mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
             if (mc_advert_extract_location(&pkt, &lat, &lon))
                 log_info("[advert] '%s' type=%u  loc %.5f,%.5f  rssi %d snr %.1f",
                          aname[0] ? aname : "?", atype, lat, lon, rssi_dbm, snr_q / 4.0);
@@ -363,8 +392,9 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     const mc_pub_channel_t *pub_ch = NULL;
     fwd_decision_t decision = classify_forward(m, &pkt, &pub_ch);
     if (decision == FWD_OK_GRP_PUBLIC) {
+        if (!process_public_grp(m, &pkt, pub_ch))   /* verbose + blacklist + ping/pong */
+            return;                                 /* blacklisted sender -> don't forward */
         m->stats.fwd_grp_public++;
-        handle_public_grp(m, &pkt, pub_ch);   /* verbose display + ping/pong */
     } else if (decision != FWD_OK_PUBLIC) {   /* a drop */
         m->stats.fwd_denied++;
         switch (decision) {

@@ -39,8 +39,9 @@ DAEMON_OBJ = $(CORE_OBJ) $(CRYPTO_OBJ) src/cli.o src/hal_linux.o src/main.o
 TEST_OBJ   = $(CORE_OBJ) $(CRYPTO_OBJ) tools/mock_hal.o tools/selftest.o
 
 BIN = meshcore-repeater
+CLI = meshcore-cli
 
-all: $(BIN)
+all: $(BIN) $(CLI)
 
 # our code: full warnings
 %.o: %.c
@@ -53,6 +54,10 @@ $(CRYPTO_OBJ): CFLAGS := -O2 -std=c11 -w
 $(BIN): $(DAEMON_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(DAEMON_OBJ) $(LDLIBS_DAEMON)
 
+# standalone control client (no radio/crypto deps, builds anywhere)
+$(CLI): tools/meshcore-cli.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $<
+
 selftest: $(TEST_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(TEST_OBJ) $(LDLIBS_TEST)
 
@@ -62,7 +67,7 @@ test: selftest
 # One-shot install: dedicated user, binary + config + service all under /opt.
 # Run as root (sudo make install). Hardware access comes from the unit's
 # SupplementaryGroups=spi gpio, so those groups must exist.
-install: $(BIN)
+install: $(BIN) $(CLI)
 	getent group $(SERVICE_USER) >/dev/null || groupadd --system $(SERVICE_USER)
 	id -u $(SERVICE_USER) >/dev/null 2>&1 || useradd --system --gid $(SERVICE_USER) \
 	  --no-create-home --home-dir $(INSTALL_DIR) --shell /usr/sbin/nologin $(SERVICE_USER)
@@ -81,6 +86,7 @@ install: $(BIN)
 	  echo ">> installed default config to $(INSTALL_DIR)/meshcore-repeater.conf"; \
 	fi
 	install -Dm 644 meshcore-repeater.service $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
+	install -Dm 755 $(CLI) $(DESTDIR)/usr/local/bin/$(CLI)
 	@systemctl daemon-reload 2>/dev/null || true
 	@echo ""
 	@echo "Installed: runs as '$(SERVICE_USER)' from $(INSTALL_DIR) (config + key live there too)."
@@ -90,11 +96,12 @@ install: $(BIN)
 uninstall:
 	-systemctl disable --now meshcore-repeater 2>/dev/null
 	rm -f $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
+	rm -f $(DESTDIR)/usr/local/bin/$(CLI)
 	-systemctl daemon-reload 2>/dev/null
 	@echo "service removed. Left $(INSTALL_DIR) and user '$(SERVICE_USER)' in place;"
 	@echo "to fully purge: sudo rm -rf $(INSTALL_DIR) && sudo userdel $(SERVICE_USER)"
 
 clean:
-	rm -f $(DAEMON_OBJ) $(TEST_OBJ) $(BIN) selftest
+	rm -f $(DAEMON_OBJ) $(TEST_OBJ) $(BIN) $(CLI) selftest
 
 .PHONY: all test install uninstall clean

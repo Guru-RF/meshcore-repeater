@@ -19,10 +19,77 @@
 #include <signal.h>
 #include <unistd.h>
 #include <poll.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 static volatile sig_atomic_t g_stop = 0;
 
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
+
+/* Open the local control socket on 127.0.0.1:port. Returns the listening fd, or
+ * -1 (disabled/failed). One command per connection; output goes back on the
+ * socket. Bound to loopback only - never exposed to the network. */
+static int control_listen(uint16_t port)
+{
+    if (port == 0)
+        return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   /* 127.0.0.1 only */
+    addr.sin_port = htons(port);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(fd, 4) != 0) {
+        log_warn("control: could not bind 127.0.0.1:%u (%s)", port, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    log_info("control interface on 127.0.0.1:%u", port);
+    return fd;
+}
+
+/* Accept one client, read a single command line, run it with stdout wired to
+ * the client, then close. Logs stay on stderr, so they are unaffected. */
+static void control_accept(cli_ctx_t *ctx, int lfd)
+{
+    int cfd = accept(lfd, NULL, NULL);
+    if (cfd < 0)
+        return;
+    /* a slow/silent client must not stall packet forwarding */
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char line[512];
+    size_t n = 0;
+    while (n < sizeof(line) - 1) {
+        char c;
+        ssize_t r = read(cfd, &c, 1);
+        if (r <= 0 || c == '\n')
+            break;
+        if (c != '\r')
+            line[n++] = c;
+    }
+    line[n] = '\0';
+
+    if (n > 0) {
+        fflush(stdout);
+        int saved = dup(STDOUT_FILENO);
+        dup2(cfd, STDOUT_FILENO);
+        cli_handle_line(ctx, line);
+        fflush(stdout);
+        dup2(saved, STDOUT_FILENO);
+        close(saved);
+    }
+    close(cfd);
+}
 
 static void usage(const char *prog)
 {
@@ -142,6 +209,8 @@ int main(int argc, char **argv)
     if (cfg.advert_interval)
         mesh_send_advert(&mesh);
 
+    int ctrl_fd = control_listen(cfg.control_port);
+
     char acc[256];
     size_t acclen = 0;
     bool stdin_open = true;
@@ -187,16 +256,28 @@ int main(int argc, char **argv)
             data_led_off = 0;
         }
 
-        /* 4. local CLI (non-blocking) */
-        if (stdin_open) {
-            struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
-            int pr = poll(&pfd, 1, (r == 1) ? 0 : 5);
-            if (pr > 0 && (pfd.revents & POLLIN))
-                stdin_open = pump_stdin(&ctx, acc, sizeof(acc), &acclen);
+        /* 4. local CLI: stdin (interactive) + control socket (non-blocking) */
+        struct pollfd pfd[2];
+        int nfds = 0;
+        int stdin_slot = -1, ctrl_slot = -1;
+        if (stdin_open) { stdin_slot = nfds; pfd[nfds].fd = STDIN_FILENO; pfd[nfds].events = POLLIN; nfds++; }
+        if (ctrl_fd >= 0) { ctrl_slot = nfds; pfd[nfds].fd = ctrl_fd; pfd[nfds].events = POLLIN; nfds++; }
+
+        if (nfds > 0) {
+            int pr = poll(pfd, nfds, (r == 1) ? 0 : 5);
+            if (pr > 0) {
+                if (stdin_slot >= 0 && (pfd[stdin_slot].revents & POLLIN))
+                    stdin_open = pump_stdin(&ctx, acc, sizeof(acc), &acclen);
+                if (ctrl_slot >= 0 && (pfd[ctrl_slot].revents & POLLIN))
+                    control_accept(&ctx, ctrl_fd);
+            }
         } else {
             hal_delay_ms(5);
         }
     }
+
+    if (ctrl_fd >= 0)
+        close(ctrl_fd);
 
     log_info("shutting down");
     hal_led_data(false);

@@ -15,6 +15,8 @@
 #include "hal.h"
 
 #define MC_MAX_PUBLIC_CHANNELS 8
+#define MC_MAX_BLACKLIST       32
+#define MC_BLACKLIST_NAME_LEN  32
 
 /* A public MeshCore channel the operator has declared forwardable. The AES key
  * is PUBLISHED, so relaying its group messages does not obscure meaning. */
@@ -66,6 +68,11 @@ typedef struct {
      * messages on one of these declared PUBLIC channels are retransmitted. */
     mc_pub_channel_t public_channels[MC_MAX_PUBLIC_CHANNELS];
     int              n_public_channels;
+
+    /* ---- moderation + control interface ---- */
+    char     blacklist[MC_MAX_BLACKLIST][MC_BLACKLIST_NAME_LEN]; /* ignored node names */
+    int      n_blacklist;
+    uint16_t control_port;       /* TCP 127.0.0.1 control port (0 = disabled) */
 } mc_config_t;
 
 void config_defaults(mc_config_t *cfg);
@@ -82,6 +89,12 @@ int  config_set(mc_config_t *cfg, const char *key, const char *val);
 
 /* Read one key into out (human form). Returns 0 ok, -1 unknown key. */
 int  config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz);
+
+/* Blacklist (ignore a node by its advertised / public-channel name).
+ * add: 0 ok, -1 full, 1 already present. remove: 0 ok, -1 not found. */
+int  config_blacklist_add(mc_config_t *cfg, const char *name);
+int  config_blacklist_remove(mc_config_t *cfg, const char *name);
+bool config_is_blacklisted(const mc_config_t *cfg, const char *name);
 
 /* Project config onto the radio / HAL parameter structs. */
 void config_to_sx126x(const mc_config_t *cfg, sx126x_cfg_t *radio);

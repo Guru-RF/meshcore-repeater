@@ -48,6 +48,7 @@ typedef struct {
     uint64_t grp_mac_fail;    /* channel-hash matched a public chan but MAC failed */
     uint64_t ping_seen;       /* "ping" received on a public channel */
     uint64_t pong_sent;       /* "pong" answers transmitted */
+    uint64_t blacklisted;     /* packets dropped from blacklisted senders */
     uint64_t tx_total;
     uint64_t tx_cad_busy;
     uint64_t tx_queue_full;

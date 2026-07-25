@@ -389,6 +389,51 @@ static void test_ping_pong(void)
     CHECK(mesh3.stats.pong_sent == 0, "ping_pong=off -> no pong");
 }
 
+static void test_blacklist(void)
+{
+    printf("[blacklist / moderation]\n");
+    mc_config_t cfg; config_defaults(&cfg);
+
+    /* config helpers */
+    CHECK(config_blacklist_add(&cfg, "ON0XYZ") == 0 && cfg.n_blacklist == 1, "add ON0XYZ");
+    CHECK(config_blacklist_add(&cfg, "on0xyz") == 1, "duplicate (case-insensitive) rejected");
+    CHECK(config_is_blacklisted(&cfg, "ON0XYZ") && config_is_blacklisted(&cfg, "on0xyz"),
+          "matches case-insensitively");
+    CHECK(!config_is_blacklisted(&cfg, "ON0ABC"), "other name not blacklisted");
+    CHECK(config_blacklist_remove(&cfg, "ON0XYZ") == 0 && cfg.n_blacklist == 0, "remove");
+    CHECK(config_blacklist_remove(&cfg, "ON0XYZ") == -1, "remove missing -> not found");
+
+    /* mesh application */
+    mc_identity_t id; mc_identity_generate(&id);
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    config_blacklist_add(&cfg, "Spammer");
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
+    uint8_t raw[MC_MAX_TRANS_UNIT];
+
+    mc_packet_t p;
+    build_public_text(&cfg, "Spammer: spam spam", &p);
+    int n = pkt_serialize(&p, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -70, 20);
+    CHECK(mesh.stats.blacklisted == 1 && mesh.stats.fwd_grp_public == 0 && mesh.stats.fwd_flood == 0,
+          "blacklisted public sender dropped (not forwarded)");
+
+    build_public_text(&cfg, "Friend: hi", &p);
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -70, 20);
+    CHECK(mesh.stats.fwd_grp_public == 1, "non-blacklisted sender forwarded");
+
+    /* a signed advert from a blacklisted node is dropped (not registered) */
+    mc_advert_info_t info; memset(&info, 0, sizeof(info));
+    info.type = ADV_TYPE_REPEATER; info.name = "Spammer";
+    mc_packet_t adv;
+    mc_advert_build(&adv, &id, &info, 1000);
+    n = pkt_serialize(&adv, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -70, 20);
+    CHECK(mesh.stats.blacklisted == 2 && mesh.stats.rx_advert == 0,
+          "blacklisted advert dropped (not registered as neighbour)");
+}
+
 static void test_crypto(void)
 {
     printf("[crypto: hmac-sha256, channel hash, base64]\n");
@@ -501,6 +546,7 @@ int main(void)
     test_mesh_direct();
     test_mesh_policy();
     test_ping_pong();
+    test_blacklist();
     test_crypto();
     test_airtime();
     test_config();

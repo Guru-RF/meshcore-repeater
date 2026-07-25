@@ -261,12 +261,15 @@ Private traffic is still never decrypted — only public-channel content is show
 
 ### Local CLI
 
-Type into the running process's stdin:
+Commands (type into the process's stdin when run interactively, **or** drive the
+service with `meshcore-cli` — see below):
 
 ```
 help                  list commands
 status                uptime, identity, stats, neighbour count
 neighbors             nodes heard (id, name, type, rssi, snr, age)
+channels              configured public channels
+blacklist add|remove|list <name>   ignore a node by name
 freq 434.0            retune live
 set tx_power 20       change a parameter (radio keys apply immediately)
 get frequency         read a value
@@ -274,6 +277,32 @@ advert                send a self-advert now
 save                  write the current config back to the file
 quit                  stop
 ```
+
+### Control interface (`meshcore-cli`)
+
+Run as a service the repeater has no stdin, so it exposes the same CLI on a
+**loopback-only** TCP port (`control_port`, default `4403`). The bundled
+`meshcore-cli` client (installed to `/usr/local/bin` by `make install`) talks to
+it:
+
+```
+meshcore-cli status                  # one-shot
+meshcore-cli blacklist add ON0XYZ    # ignore a node (auto-saved to config)
+meshcore-cli blacklist list
+meshcore-cli set frequency 434.0
+meshcore-cli                         # interactive (reads commands from stdin)
+meshcore-cli -p 4403 status          # override port (or MESHCORE_PORT env)
+```
+
+The port is bound to `127.0.0.1` only (never the network); any local user can
+use it, so it's meant for a single-admin repeater host. Set `control_port = 0`
+to disable it.
+
+**Blacklist / moderation:** `blacklist add <name>` ignores a node by its
+advertised / public-channel name — its adverts are neither relayed nor
+registered as neighbours, and its public messages are dropped (and not answered
+by ping/pong). Names are self-reported (spoofable), so this is lightweight
+moderation, not authentication. Changes are saved to the config immediately.
 
 ---
 
