@@ -1,27 +1,37 @@
 # meshcore-repeater
 
-A plain-C [MeshCore](https://meshcore.co.uk) **repeater** for the
-**Raspberry Pi** driving a **NiceRF LoRa1268F30-433** (Semtech **SX1268**) module.
+A plain-C **[MeshCore](https://meshcore.co.uk) ham-radio repeater** for the
+**Raspberry Pi**, built for the **[RF.Guru](https://rf.guru) MeshCore 30 dBm
+(1 W) hat** — a 70 cm Semtech **SX1268** board with a filtered, RF-shielded
+front end (*soon available; currently in pre-production testing*).
 
-It is a from-scratch C port, inspired by
-[pyMC_Repeater](https://github.com/pyMC-dev/pyMC_Repeater), with:
+It implements the **[IARU Region 1 ham-MeshCore RFC](https://github.com/Guru-RF/meshcore-rfc-iaru-r1)**:
+a single dedicated 70 cm ham-only frequency — **434.890 MHz, 62.5 kHz, SF8,
+CR4:8** on MeshCore's public channel — so licensed amateurs across Region 1 run
+one interoperable LoRa mesh, clear of unlicensed ISM traffic. (The occupied band
+is ~434.859–434.921 MHz; nothing is emitted above 435.000 MHz, protecting the
+amateur-satellite segment.)
+
+It also enforces a strict **ham content policy**: only unencrypted public-channel
+traffic and signed adverts are relayed — private (encrypted) messages are dropped,
+since amateur radio forbids obscuring the meaning of a transmission.
+
+Under the hood:
 
 - a **hand-written SX1268 driver** (no RadioLib) over `spidev` + `libgpiod`;
-- the **MeshCore wire format** and **flood/direct forwarding** logic, verified
-  against the upstream [MeshCore](https://github.com/meshcore-dev/MeshCore)
-  source so it interoperates with stock MeshCore nodes;
-- **Ed25519-signed adverts** (TweetNaCl), so the repeater is visible to MeshCore
-  clients for path discovery;
-- a **fully runtime-configurable radio** (frequency, SF, BW, CR, power, sync
-  word) via a config file and a local CLI — change frequency without recompiling.
-
-Built for a **70 cm ham-only MeshCore mesh**: the default frequency (433.500 MHz)
-stays clear of LoRa-APRS (~433.775 MHz).
+- the **MeshCore wire format** and **flood/direct forwarding**, verified against
+  upstream [MeshCore](https://github.com/meshcore-dev/MeshCore) so it interoperates
+  with stock MeshCore nodes;
+- **Ed25519-signed adverts** (TweetNaCl) for path discovery;
+- strict **public-only forwarding** with configurable public channels, **ping/pong**,
+  a **blacklist**, and a local **`meshcore-cli`** control interface;
+- a **fully runtime-configurable radio** (frequency, SF, BW, CR, power, sync word)
+  via a config file and CLI — no recompile to retune.
 
 > Scope: this is a *repeater* (relay + signed advert + stats), not a client.
-> It forwards by route type and never decrypts payloads, so text messages, ACKs,
-> requests, etc. all relay without any keys. There is **no over-the-mesh admin
-> login** (by design) — configuration is local only.
+> Configuration is local only (config file + `meshcore-cli`); there is **no
+> over-the-mesh admin login**, by design. Originally a from-scratch C port
+> inspired by [pyMC_Repeater](https://github.com/pyMC-dev/pyMC_Repeater).
 
 ---
 
@@ -56,10 +66,25 @@ The forwarding constants match MeshCore (`Mesh.cpp`):
 
 ## Hardware & wiring
 
-The LoRa1262F30/LoRa1268F30 is an SX126x radio with an on-board PA/LNA. On this
-board the antenna switch is driven **internally by the chip's DIO2** (the module
-exposes no RXEN/TXEN pins), and **NSS is a plain GPIO** (not the hardware CE), so
-the firmware drives chip-select manually. Logic is **3.3 V**; SPI is **mode 0**, ≤ 10 MHz.
+### The RF.Guru 1 W hat
+
+This repeater targets the **[RF.Guru](https://rf.guru) MeshCore 30 dBm (1 W)
+hat** — an SX1268 Raspberry Pi HAT with a clean, protected 70 cm front end:
+
+- a **Taoglas DBP.433.T.A.30** 433 MHz dielectric band-pass filter;
+- a **TPESD5V0R1BBSFYL** bidirectional low-capacitance ESD-protection diode;
+- a **2RL090M-5-ST5** RF part on the antenna path;
+- housed in a **machined aluminium case for RF shielding**.
+
+*Pre-production — soon available from [rf.guru](https://rf.guru).* The firmware
+also runs on a bare SX126x module (e.g. NiceRF LoRa1268F30-433) wired as below.
+
+### SX126x wiring
+
+The SX126x carries an on-board PA/LNA. On this board the antenna switch is driven
+**internally by the chip's DIO2** (no RXEN/TXEN pins), and **NSS is a plain GPIO**
+(not the hardware CE), so the firmware drives chip-select manually. Logic is
+**3.3 V**; SPI is **mode 0**, ≤ 10 MHz.
 
 Default wiring (matches the reference schematic — RPi 40-pin header):
 
@@ -181,27 +206,29 @@ To run in place for development instead (interactive CLI, no install), just
 ## Configuration
 
 Everything is in `meshcore-repeater.conf` (`key = value`, `#` comments) and can
-be changed live from the CLI. Radio defaults match the MeshCore network so the
-repeater interoperates with stock nodes:
+be changed live from the CLI. Defaults follow the
+[IARU R1 ham-MeshCore RFC](https://github.com/Guru-RF/meshcore-rfc-iaru-r1) so
+the repeater joins that network out of the box:
 
 | key | default | meaning |
 |-----|---------|---------|
-| `frequency` | `433.500` | MHz — keep clear of LoRa-APRS (~433.775) |
-| `bandwidth` | `250` | kHz — one of 62.5 / 125 / 250 / 500 |
-| `spreading_factor` | `10` | |
-| `coding_rate` | `5` | 4/5 |
-| `tx_power` | `22` | SX1268 **chip** dBm (PA adds gain → ~+30 dBm) |
-| `sync_word` | `private` | MeshCore `PRIVATE` (0x1424); `public` = 0x3444 |
+| `frequency` | `434.890` | MHz — IARU R1 ham-MeshCore calling QRG (≤ 435.000) |
+| `bandwidth` | `62.5` | kHz — one of 62.5 / 125 / 250 / 500 |
+| `spreading_factor` | `8` | RFC |
+| `coding_rate` | `8` | 4/8 (RFC) |
+| `tx_power` | `22` | SX1268 **chip** dBm (the hat's PA reaches ~+30 dBm / 1 W) |
+| `sync_word` | `private` | MeshCore default (0x1424); `public` = 0x3444 |
 | `use_cad` | `true` | listen-before-talk |
 | `advert_interval` | `7200` | seconds between self-adverts (0 = off) |
 | `name` | `HamRepeater` | advertised node name |
-| `public_channel` | *(none)* | a public channel key to relay (repeatable) — see below |
+| `public_channel` | *Public* | public channel key(s) to relay (repeatable) — see below |
 | `ping_pong` | `false` | answer `ping` on a public channel with `pong` |
+| `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
 
-> To interoperate with other MeshCore nodes, **`bandwidth`, `spreading_factor`,
-> `coding_rate` and `sync_word` must match them.** Only change `frequency` (and
-> the matching params on your other nodes) to move your ham mesh off a busy
-> channel.
+> To interoperate with the mesh, **`frequency`, `bandwidth`, `spreading_factor`,
+> `coding_rate` and `sync_word` must match** — the defaults above already do, per
+> the RFC. Keep the whole occupied band (~434.859–434.921 MHz at 62.5 kHz) below
+> **435.000 MHz** to protect the amateur-satellite segment.
 
 ### Content policy — forward public, drop private
 
@@ -313,13 +340,16 @@ moderation, not authentication. Changes are saved to the config immediately.
 
 ## Frequency / legal notes
 
-- Default **433.500 MHz** sits in the 70 cm band and, with 250 kHz bandwidth,
-  does not overlap LoRa-APRS at ~433.775 MHz. `434.000 MHz` is another clean
-  choice. Avoid 433.775 and 433.900.
+- The defaults follow the
+  [IARU R1 ham-MeshCore RFC](https://github.com/Guru-RF/meshcore-rfc-iaru-r1):
+  **434.890 MHz**, 62.5 kHz, in the 70 cm amateur band. The occupied band is
+  ~434.859–434.921 MHz — **keep everything below 435.000 MHz** to protect the
+  amateur-satellite segment.
+- Operating requires an **amateur radio licence**; fixed repeater nodes should be
+  coordinated per the RFC and your national rules.
 - **+30 dBm (1 W) EIRP may exceed what your licence class/region permits.** The
   default `tx_power = 22` drives the chip to its maximum; confirm the actual
   antenna power and your legal limit, and lower `tx_power` if needed.
-- This is an amateur-radio project; operate within your licence.
 
 ---
 

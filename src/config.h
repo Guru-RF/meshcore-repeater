@@ -1,9 +1,10 @@
 /*
  * config.h - runtime configuration (loaded from a file, mutable via the CLI).
  *
- * Every radio parameter is runtime-driven: change the frequency to stay clear
- * of LoRa-APRS without recompiling.  Defaults match the MeshCore network so the
- * repeater interoperates with stock MeshCore nodes.
+ * Every radio parameter is runtime-driven: retune without recompiling.
+ * Defaults follow the IARU R1 ham-MeshCore RFC
+ * (github.com/Guru-RF/meshcore-rfc-iaru-r1) so the repeater joins that network
+ * out of the box and interoperates with stock MeshCore nodes.
  */
 #ifndef MC_CONFIG_H
 #define MC_CONFIG_H

@@ -13,14 +13,16 @@ void config_defaults(mc_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
 
-    /* radio defaults: MeshCore network params, 433 MHz ham band clear of LoRa-APRS */
-    cfg->frequency        = 433.500;   /* MHz - APRS is ~433.775; 250kHz BW => no overlap */
-    cfg->bandwidth        = 250;       /* kHz */
-    cfg->spreading_factor = 10;
-    cfg->coding_rate      = 5;         /* 4/5 */
-    cfg->tx_power         = 22;        /* SX1268 chip max; module PA brings antenna near +30 dBm */
+    /* radio defaults: IARU R1 ham-MeshCore RFC (github.com/Guru-RF/meshcore-rfc-iaru-r1)
+     * = MeshCore stock Europe profile with the frequency moved to the 70 cm calling QRG.
+     * NB: must not emit above 435.000 MHz (protects the amateur-satellite segment). */
+    cfg->frequency        = 434.890;   /* MHz - IARU R1 ham-MeshCore calling frequency */
+    cfg->bandwidth        = 62.5;      /* kHz - occupied ~434.859..434.921 MHz */
+    cfg->spreading_factor = 8;
+    cfg->coding_rate      = 8;         /* 4/8 */
+    cfg->tx_power         = 22;        /* SX1268 chip max; the hat's PA reaches +30 dBm (1 W) */
     cfg->preamble         = 16;
-    cfg->sync_word        = 0x1424;    /* MeshCore PRIVATE (RadioLib 0x12 expanded) */
+    cfg->sync_word        = 0x1424;    /* MeshCore default (RadioLib 0x12 expanded) */
     cfg->crc_on           = true;
     cfg->iq_inverted      = false;
     cfg->use_cad          = true;

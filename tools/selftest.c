@@ -489,8 +489,9 @@ static void test_config(void)
     printf("[config defaults + set/get]\n");
     mc_config_t cfg; config_defaults(&cfg);
     CHECK(cfg.sync_word == 0x1424, "default sync word is MeshCore PRIVATE 0x1424");
-    CHECK(cfg.bandwidth == 250 && cfg.spreading_factor == 10 && cfg.coding_rate == 5,
-          "default modem params match MeshCore (BW250/SF10/CR4-5)");
+    CHECK(cfg.frequency == 434.890 && cfg.bandwidth == 62.5 &&
+          cfg.spreading_factor == 8 && cfg.coding_rate == 8,
+          "default modem params match the IARU R1 RFC (434.890/BW62.5/SF8/CR4-8)");
     CHECK(config_set(&cfg, "frequency", "434.000") == 0 && cfg.frequency == 434.0,
           "set frequency");
     CHECK(config_set(&cfg, "frequency", "9999") == -2, "reject out-of-range frequency");
