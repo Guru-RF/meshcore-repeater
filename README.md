@@ -163,6 +163,10 @@ journalctl -u meshcore-repeater -f            # watch it run
 - `make install` **won't overwrite** an existing `/opt/meshcore-repeater/meshcore-repeater.conf`,
   so upgrades keep your settings — rebuild and re-run `sudo make install`, then
   `sudo systemctl restart meshcore-repeater`.
+- **Node identity is preserved:** if a `repeater.key` sits next to the checkout
+  and `/opt` has none yet, `make install` copies it in (mode `600`), so the
+  installed repeater keeps the same node id. A fresh install with no key just
+  generates one on first run.
 - Running as a service is **headless** — the interactive stdin CLI is unavailable
   (`StandardInput=null`); manage it with `systemctl`/`journalctl`, and
   `systemctl restart` after editing the config. Add `-v` to `ExecStart`

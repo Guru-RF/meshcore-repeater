@@ -68,6 +68,11 @@ install: $(BIN)
 	  --no-create-home --home-dir $(INSTALL_DIR) --shell /usr/sbin/nologin $(SERVICE_USER)
 	install -d -o $(SERVICE_USER) -g $(SERVICE_USER) -m 750 $(DESTDIR)$(INSTALL_DIR)
 	install -m 755 $(BIN) $(DESTDIR)$(INSTALL_DIR)/$(BIN)
+	@if [ -f repeater.key ] && [ ! -f $(DESTDIR)$(INSTALL_DIR)/repeater.key ]; then \
+	  install -m 600 -o $(SERVICE_USER) -g $(SERVICE_USER) repeater.key \
+	    $(DESTDIR)$(INSTALL_DIR)/repeater.key; \
+	  echo ">> preserved existing identity key -> $(INSTALL_DIR)/repeater.key"; \
+	fi
 	@if [ -f $(DESTDIR)$(INSTALL_DIR)/meshcore-repeater.conf ]; then \
 	  echo ">> keeping existing $(INSTALL_DIR)/meshcore-repeater.conf"; \
 	else \
