@@ -65,4 +65,8 @@ bool mc_advert_verify(const mc_packet_t *pkt, uint8_t out_pub[MC_PUB_KEY_SIZE]);
  */
 int  mc_advert_extract(const mc_packet_t *pkt, uint8_t *type, char *name, size_t namesz);
 
+/* Extract the advertised GPS position, if present. Returns true and fills
+ * lat/lon (degrees) when the advert carries a location, false otherwise. */
+bool mc_advert_extract_location(const mc_packet_t *pkt, double *lat, double *lon);
+
 #endif /* MC_ADVERT_H */

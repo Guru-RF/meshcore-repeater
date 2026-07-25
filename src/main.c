@@ -30,7 +30,7 @@ static void usage(const char *prog)
         "MeshCore repeater (plain C, SX1268)\n"
         "usage: %s [options]\n"
         "  -c <file>   config file (default: meshcore-repeater.conf)\n"
-        "  -v          verbose (debug logging)\n"
+        "  -v          verbose: log public messages, adverts and dropped packets\n"
         "  -q          quiet (errors only)\n"
         "  --genkey    generate a new identity key file and exit\n"
         "  -h          this help\n", prog);
@@ -65,10 +65,11 @@ int main(int argc, char **argv)
 {
     const char *config_path = "meshcore-repeater.conf";
     bool genkey = false;
+    bool verbose = false;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc) config_path = argv[++i];
-        else if (!strcmp(argv[i], "-v")) log_set_level(LOG_LEVEL_DEBUG);
+        else if (!strcmp(argv[i], "-v")) { log_set_level(LOG_LEVEL_DEBUG); verbose = true; }
         else if (!strcmp(argv[i], "-q")) log_set_level(LOG_LEVEL_ERR);
         else if (!strcmp(argv[i], "--genkey")) genkey = true;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
@@ -79,6 +80,7 @@ int main(int argc, char **argv)
     config_defaults(&cfg);
     if (config_load(&cfg, config_path) != 0)
         log_info("no config file '%s'; using built-in defaults", config_path);
+    cfg.verbose = verbose;   /* -v overrides after the file load */
 
     /* identity */
     mc_identity_t id;

@@ -51,6 +51,8 @@ void config_defaults(mc_config_t *cfg)
     cfg->longitude       = 0.0;
     cfg->advert_interval = 7200;       /* 2 h */
     cfg->forward         = true;
+    cfg->ping_pong       = false;      /* opt-in: answer public "ping" with "pong" */
+    cfg->verbose         = false;      /* set at runtime by the -v flag */
 }
 
 /* ---- value parsers ---- */
@@ -224,6 +226,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "location")) { if (!parse_bool(val, &b)) return -2; cfg->has_location = b; return 0; }
     if (!strcasecmp(key, "advert_interval")) { if (!parse_u32(val, &u)) return -2; cfg->advert_interval = u; return 0; }
     if (!strcasecmp(key, "forward")) { if (!parse_bool(val, &b)) return -2; cfg->forward = b; return 0; }
+    if (!strcasecmp(key, "ping_pong")) { if (!parse_bool(val, &b)) return -2; cfg->ping_pong = b; return 0; }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
 
     return -1; /* unknown key */
@@ -263,6 +266,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "location"))         { snprintf(out, outsz, "%s", cfg->has_location ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "advert_interval"))  { snprintf(out, outsz, "%u", cfg->advert_interval); return 0; }
     if (!strcasecmp(key, "forward"))          { snprintf(out, outsz, "%s", cfg->forward ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     return -1;
 }
@@ -333,7 +337,7 @@ int config_save(const mc_config_t *cfg, const char *path)
         "spi_dev", "spi_speed", "gpio_chip", "gpio_reset", "gpio_busy", "gpio_dio1",
         "gpio_nss", "rf_switch", "gpio_rxen", "gpio_txen", "use_leds", "gpio_led_on",
         "gpio_led_data", "name", "key_file", "location", "latitude",
-        "longitude", "advert_interval", "forward", NULL
+        "longitude", "advert_interval", "forward", "ping_pong", NULL
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {

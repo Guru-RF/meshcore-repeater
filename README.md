@@ -174,6 +174,7 @@ repeater interoperates with stock nodes:
 | `advert_interval` | `7200` | seconds between self-adverts (0 = off) |
 | `name` | `HamRepeater` | advertised node name |
 | `public_channel` | *(none)* | a public channel key to relay (repeatable) — see below |
+| `ping_pong` | `false` | answer `ping` on a public channel with `pong` |
 
 > To interoperate with other MeshCore nodes, **`bandwidth`, `spreading_factor`,
 > `coding_rate` and `sync_word` must match them.** Only change `frequency` (and
@@ -213,6 +214,20 @@ CLI lists what's configured; `status` shows the `policy:` counters
 > that published key is what makes relaying the traffic legal. The repeater
 > proves a message belongs to a configured channel, but it cannot judge whether
 > *you* were entitled to call that key public.
+
+### Ping/pong
+
+With `ping_pong = true` (and at least one `public_channel`), sending `ping` on a
+public channel makes the repeater reply `pong` on that same channel — a quick
+liveness/coverage check. It decrypts only public-channel text (using the
+published key), matches an exact `ping`, and answers as `<name>: pong`.
+
+### Verbose (`-v`)
+
+Run with `-v` to log activity as it happens: decrypted **public** messages
+(`[public …]`), received **adverts** with name/type/GPS (`[advert …]`), and
+every packet the policy **drops** with the reason (`[ignored …]`). Private
+traffic is still never decrypted — only public-channel content is shown.
 
 ### Local CLI
 

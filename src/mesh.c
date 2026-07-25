@@ -6,7 +6,10 @@
 #include "log.h"
 #include "util.h"
 #include "hmac_sha256.h"
+#include "crypto/aes128.h"
 
+#include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -96,8 +99,12 @@ typedef enum {
  *     MAC is HMAC-SHA256(secret, ciphertext)[0..1]; no decryption is needed.
  *   - everything else (private unicast, unknown channels, unknown types) -> drop.
  */
-static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pkt)
+static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pkt,
+                                       const mc_pub_channel_t **matched)
 {
+    if (matched)
+        *matched = NULL;
+
     switch (pkt_payload_type(pkt)) {
     case PAYLOAD_TYPE_ADVERT:   /* signature already verified in mesh_on_recv */
     case PAYLOAD_TYPE_TRACE:    /* plaintext */
@@ -120,8 +127,11 @@ static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pk
             hash_seen = true;
             uint8_t h[32];
             hmac_sha256(ch->secret, sizeof(ch->secret), ct, ctlen, h);
-            if (h[0] == mac[0] && h[1] == mac[1])
+            if (h[0] == mac[0] && h[1] == mac[1]) {
+                if (matched)
+                    *matched = ch;
                 return FWD_OK_GRP_PUBLIC;      /* proven public content */
+            }
         }
         return hash_seen ? FWD_DROP_GRP_MACFAIL : FWD_DROP_GRP_UNMATCHED;
     }
@@ -138,24 +148,131 @@ static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pk
     }
 }
 
-/* Returns true if the packet is allowed to forward; bumps the policy stats. */
-static bool policy_permits(mc_mesh_t *m, const mc_packet_t *pkt)
+static const char *decision_reason(fwd_decision_t d)
 {
-    switch (classify_forward(m, pkt)) {
-    case FWD_OK_PUBLIC:
-        return true;
-    case FWD_OK_GRP_PUBLIC:
-        m->stats.fwd_grp_public++;
-        return true;
-    case FWD_DROP_DM:
-        m->stats.fwd_denied++; m->stats.fwd_denied_dm++; return false;
-    case FWD_DROP_GRP_UNMATCHED:
-        m->stats.fwd_denied++; m->stats.fwd_denied_grp++; return false;
-    case FWD_DROP_GRP_MACFAIL:
-        m->stats.fwd_denied++; m->stats.fwd_denied_grp++; m->stats.grp_mac_fail++; return false;
-    case FWD_DROP_OTHER:
-    default:
-        m->stats.fwd_denied++; m->stats.fwd_denied_other++; return false;
+    switch (d) {
+    case FWD_DROP_DM:            return "private direct message";
+    case FWD_DROP_GRP_UNMATCHED: return "group msg on an unconfigured channel";
+    case FWD_DROP_GRP_MACFAIL:   return "group msg failed public-channel MAC";
+    default:                     return "non-public payload type";
+    }
+}
+
+/* ---- public-channel message codec (only used for CONFIGURED public keys) ---- */
+
+/* Decrypt a public GRP_TXT into out (NUL-terminated). Returns plaintext length,
+ * or -1. Caller must have MAC-verified the packet against `ch` already. */
+static int channel_decrypt(const mc_pub_channel_t *ch, const mc_packet_t *pkt,
+                           uint8_t *out, size_t outsz)
+{
+    if (pkt->payload_len < 19)
+        return -1;
+    size_t ctlen = (size_t)pkt->payload_len - 3;
+    if (ctlen % 16 != 0 || ctlen + 1 > outsz)
+        return -1;
+    memcpy(out, &pkt->payload[3], ctlen);
+    aes128_ctx_t ac;
+    aes128_init(&ac, ch->secret);          /* AES key = first 16 bytes of secret */
+    aes128_ecb_decrypt(&ac, out, ctlen);
+    out[ctlen] = '\0';                     /* terminate at the padded end */
+    return (int)ctlen;
+}
+
+/* MeshCore group-text plaintext: [timestamp:4][txt_type:1]["sender: message"].
+ * Return a pointer to the message body (after the first ": "), or the whole
+ * text if there is no separator; NULL if the plaintext is too short. */
+static const char *grp_message_body(const uint8_t *plain, int plen)
+{
+    if (plen < 5)
+        return NULL;
+    const char *text = (const char *)&plain[5];
+    const char *sep = strstr(text, ": ");
+    return sep ? sep + 2 : text;
+}
+
+static bool is_ping(const char *msg)
+{
+    while (*msg == ' ' || *msg == '\t') msg++;
+    if (strncasecmp(msg, "ping", 4) != 0)
+        return false;
+    const char *p = msg + 4;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return *p == '\0';                     /* exactly "ping" (+ trailing space) */
+}
+
+/* Build an encrypted public GRP_TXT carrying "sender: text". Returns 0 on ok. */
+static int channel_build_txt(const mc_pub_channel_t *ch, const char *sender,
+                             const char *text, uint32_t ts, mc_packet_t *pkt)
+{
+    uint8_t plain[MC_MAX_PACKET_PAYLOAD];
+    size_t i = 0;
+    wr_u32le(&plain[0], ts);  i = 4;
+    plain[i++] = 0;                                    /* txt_type = plain */
+    int n = snprintf((char *)&plain[i], sizeof(plain) - i, "%s: %s",
+                     sender ? sender : "", text);
+    if (n < 0)
+        return -1;
+    i += (size_t)n;                                    /* strlen, no NUL (matches MeshCore) */
+    size_t ctlen = (i + 15) & ~(size_t)15;             /* zero-pad up to a 16-byte block */
+    if (ctlen == 0) ctlen = 16;
+    if (3 + ctlen > MC_MAX_PACKET_PAYLOAD)
+        return -1;
+    while (i < ctlen) plain[i++] = 0;
+
+    aes128_ctx_t ac;
+    aes128_init(&ac, ch->secret);
+    aes128_ecb_encrypt(&ac, plain, ctlen);
+
+    memset(pkt, 0, sizeof(*pkt));
+    pkt->header   = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_FLOOD);
+    pkt->path_len = 0;                                 /* fresh flood, 1-byte hash size */
+    pkt->payload[0] = ch->hash;
+    uint8_t mac[32];
+    hmac_sha256(ch->secret, sizeof(ch->secret), plain, ctlen, mac);
+    pkt->payload[1] = mac[0];
+    pkt->payload[2] = mac[1];
+    memcpy(&pkt->payload[3], plain, ctlen);
+    pkt->payload_len = (uint16_t)(3 + ctlen);
+    return 0;
+}
+
+static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch)
+{
+    mc_packet_t pkt;
+    if (channel_build_txt(ch, m->cfg->name, "pong", (uint32_t)time(NULL), &pkt) != 0)
+        return;
+    /* record our own message so its echo is treated as a duplicate */
+    uint8_t hash[MC_MAX_HASH_SIZE];
+    pkt_calc_hash(&pkt, hash);
+    seen_check_and_add(m, hash);
+    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50);       /* small jitter */
+    m->stats.pong_sent++;
+    log_info("mesh: ping -> pong on channel '%s'", ch->name[0] ? ch->name : "-");
+}
+
+/* Verbose display + ping/pong handling for an allowed public group message. */
+static void handle_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
+                              const mc_pub_channel_t *ch)
+{
+    if (pkt_payload_type(pkt) != PAYLOAD_TYPE_GRP_TXT) {
+        if (m->cfg->verbose)
+            log_info("[public %s] <data, %u bytes>", ch->name[0] ? ch->name : "-",
+                     (unsigned)pkt->payload_len);
+        return;
+    }
+    uint8_t plain[MC_MAX_PACKET_PAYLOAD];
+    int plen = channel_decrypt(ch, pkt, plain, sizeof(plain));
+    if (plen < 5)
+        return;
+    if (m->cfg->verbose)
+        log_info("[public %s] %s", ch->name[0] ? ch->name : "-", (const char *)&plain[5]);
+
+    if (m->cfg->ping_pong) {
+        const char *body = grp_message_body(plain, plen);
+        if (body && is_ping(body)) {
+            m->stats.ping_seen++;
+            send_pong(m, ch);
+        }
     }
 }
 
@@ -190,6 +307,17 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         }
         m->stats.rx_advert++;
         neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
+        if (m->cfg->verbose) {
+            uint8_t atype = 0; char aname[32];
+            double lat, lon;
+            mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
+            if (mc_advert_extract_location(&pkt, &lat, &lon))
+                log_info("[advert] '%s' type=%u  loc %.5f,%.5f  rssi %d snr %.1f",
+                         aname[0] ? aname : "?", atype, lat, lon, rssi_dbm, snr_q / 4.0);
+            else
+                log_info("[advert] '%s' type=%u  rssi %d snr %.1f",
+                         aname[0] ? aname : "?", atype, rssi_dbm, snr_q / 4.0);
+        }
     }
 
     if (pt == PAYLOAD_TYPE_TRACE) {
@@ -197,6 +325,9 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
          * Not yet implemented to avoid corrupting trace path semantics;
          * trace packets are counted but not forwarded by this node. */
         m->stats.trace_seen++;
+        if (m->cfg->verbose)
+            log_info("[trace] %u hops, rssi %d snr %.1f (not forwarded yet)",
+                     pkt_path_hash_count(&pkt), rssi_dbm, snr_q / 4.0);
         return;
     }
 
@@ -204,8 +335,23 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         return;
 
     /* ham content policy: relay only provably-public traffic, drop the rest */
-    if (!policy_permits(m, &pkt))
+    const mc_pub_channel_t *pub_ch = NULL;
+    fwd_decision_t decision = classify_forward(m, &pkt, &pub_ch);
+    if (decision == FWD_OK_GRP_PUBLIC) {
+        m->stats.fwd_grp_public++;
+        handle_public_grp(m, &pkt, pub_ch);   /* verbose display + ping/pong */
+    } else if (decision != FWD_OK_PUBLIC) {   /* a drop */
+        m->stats.fwd_denied++;
+        switch (decision) {
+        case FWD_DROP_DM:            m->stats.fwd_denied_dm++; break;
+        case FWD_DROP_GRP_UNMATCHED: m->stats.fwd_denied_grp++; break;
+        case FWD_DROP_GRP_MACFAIL:   m->stats.fwd_denied_grp++; m->stats.grp_mac_fail++; break;
+        default:                     m->stats.fwd_denied_other++; break;
+        }
+        if (m->cfg->verbose)
+            log_info("[ignored] type=0x%02X dropped: %s", pt, decision_reason(decision));
         return;
+    }
 
     if (pkt_is_route_flood(&pkt)) {
         uint8_t n  = pkt_path_hash_count(&pkt);

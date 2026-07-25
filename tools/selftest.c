@@ -15,6 +15,7 @@
 #include "../src/util.h"
 #include "../src/hmac_sha256.h"
 #include "../src/crypto/sha256.h"
+#include "../src/crypto/aes128.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -304,6 +305,89 @@ static void test_mesh_policy(void)
     CHECK(mesh.stats.fwd_denied == 4, "all four packets counted as denied");
 }
 
+/* Build an encrypted public GRP_TXT carrying `text` (as MeshCore would). */
+static void build_public_text(const mc_config_t *cfg, const char *text, mc_packet_t *p)
+{
+    const mc_pub_channel_t *ch = &cfg->public_channels[0];
+    uint8_t plain[64];
+    size_t i = 0;
+    plain[0] = 1; plain[1] = 2; plain[2] = 3; plain[3] = 4; i = 4;  /* timestamp */
+    plain[i++] = 0;                                                 /* txt_type */
+    size_t tl = strlen(text);
+    memcpy(&plain[i], text, tl); i += tl;
+    size_t ctlen = (i + 15) & ~(size_t)15;
+    while (i < ctlen) plain[i++] = 0;
+
+    aes128_ctx_t ac; aes128_init(&ac, ch->secret);
+    aes128_ecb_encrypt(&ac, plain, ctlen);
+
+    memset(p, 0, sizeof(*p));
+    p->header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_FLOOD);
+    p->payload[0] = ch->hash;
+    uint8_t mac[32]; hmac_sha256(ch->secret, 32, plain, ctlen, mac);
+    p->payload[1] = mac[0]; p->payload[2] = mac[1];
+    memcpy(&p->payload[3], plain, ctlen);
+    p->payload_len = (uint16_t)(3 + ctlen);
+}
+
+static void test_ping_pong(void)
+{
+    printf("[public channel ping/pong]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    mc_config_t cfg; config_defaults(&cfg);
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    cfg.ping_pong = true;
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
+    uint8_t raw[MC_MAX_TRANS_UNIT];
+
+    /* a "ping" on the public channel triggers a "pong" */
+    mc_packet_t ping;
+    build_public_text(&cfg, "Alice: ping", &ping);
+    int n = pkt_serialize(&ping, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -70, 20);
+    CHECK(mesh.stats.ping_seen == 1 && mesh.stats.pong_sent == 1, "ping seen -> pong sent");
+    CHECK(mesh.stats.fwd_grp_public == 1, "the ping itself was forwarded (public)");
+
+    /* the enqueued pong must decrypt to '<name>: pong' on the same channel */
+    int found = -1;
+    for (int k = 0; k < MESH_TXQ_SIZE; k++)
+        if (mesh.txq[k].used && pkt_payload_type(&mesh.txq[k].pkt) == PAYLOAD_TYPE_GRP_TXT) { found = k; break; }
+    CHECK(found >= 0, "pong enqueued for TX");
+    if (found >= 0) {
+        mc_packet_t *q = &mesh.txq[found].pkt;
+        const mc_pub_channel_t *ch = &cfg.public_channels[0];
+        size_t ctl = (size_t)q->payload_len - 3;
+        uint8_t mac[32]; hmac_sha256(ch->secret, 32, &q->payload[3], ctl, mac);
+        CHECK(q->payload[0] == ch->hash && mac[0] == q->payload[1] && mac[1] == q->payload[2],
+              "pong is a valid public-channel packet (hash + MAC)");
+        uint8_t dec[64]; memcpy(dec, &q->payload[3], ctl);
+        aes128_ctx_t ac; aes128_init(&ac, ch->secret);
+        aes128_ecb_decrypt(&ac, dec, ctl); dec[ctl] = 0;
+        CHECK(strstr((const char *)&dec[5], ": pong") != NULL,
+              "pong plaintext is '<name>: pong' (got '%s')", (const char *)&dec[5]);
+    }
+
+    /* a non-ping public message must NOT trigger a pong */
+    mc_mesh_t mesh2; mesh_init(&mesh2, &id, &cfg);
+    mc_packet_t chat;
+    build_public_text(&cfg, "Bob: hello world", &chat);
+    n = pkt_serialize(&chat, raw, sizeof(raw));
+    mesh_on_recv(&mesh2, raw, (size_t)n, -70, 20);
+    CHECK(mesh2.stats.pong_sent == 0 && mesh2.stats.fwd_grp_public == 1,
+          "non-ping public message forwarded, no pong");
+
+    /* with ping_pong disabled, a ping is forwarded but not answered */
+    mc_config_t cfg2; config_defaults(&cfg2);
+    config_set(&cfg2, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    cfg2.ping_pong = false;
+    mc_mesh_t mesh3; mesh_init(&mesh3, &id, &cfg2);
+    build_public_text(&cfg2, "Al: ping", &chat);
+    n = pkt_serialize(&chat, raw, sizeof(raw));
+    mesh_on_recv(&mesh3, raw, (size_t)n, -70, 20);
+    CHECK(mesh3.stats.pong_sent == 0, "ping_pong=off -> no pong");
+}
+
 static void test_crypto(void)
 {
     printf("[crypto: hmac-sha256, channel hash, base64]\n");
@@ -328,6 +412,18 @@ static void test_crypto(void)
     CHECK(d[0] == 0x11, "Public channel hash byte == 0x11 (got 0x%02X)", d[0]);
 
     CHECK(base64_decode("bad*chars==", psk, sizeof(psk)) == -1, "base64 rejects bad input");
+
+    /* AES-128 FIPS-197 known-answer test (encrypt + decrypt) */
+    uint8_t key[16], block[16], ct128[16];
+    hex2bin("000102030405060708090a0b0c0d0e0f", key, sizeof(key));
+    hex2bin("00112233445566778899aabbccddeeff", block, sizeof(block));
+    hex2bin("69c4e0d86a7b0430d8cdb78070b4c55a", ct128, sizeof(ct128));
+    aes128_ctx_t ac; aes128_init(&ac, key);
+    aes128_encrypt_block(&ac, block);
+    CHECK(memcmp(block, ct128, 16) == 0, "AES-128 encrypt matches FIPS-197 vector");
+    aes128_decrypt_block(&ac, block);
+    uint8_t pt128[16]; hex2bin("00112233445566778899aabbccddeeff", pt128, sizeof(pt128));
+    CHECK(memcmp(block, pt128, 16) == 0, "AES-128 decrypt inverts encrypt");
 }
 
 static void test_airtime(void)
@@ -403,6 +499,7 @@ int main(void)
     test_mesh_flood();
     test_mesh_direct();
     test_mesh_policy();
+    test_ping_pong();
     test_crypto();
     test_airtime();
     test_config();

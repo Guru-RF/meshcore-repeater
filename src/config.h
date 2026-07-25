@@ -58,6 +58,8 @@ typedef struct {
     double   latitude, longitude;
     uint32_t advert_interval;    /* seconds between self-adverts (0 = disabled) */
     bool     forward;            /* act as a repeater (allow packet forwarding) */
+    bool     ping_pong;          /* answer "ping" on a public channel with "pong" */
+    bool     verbose;            /* -v: log public messages, adverts, and drops (runtime only) */
 
     /* ---- ham content policy ----
      * Strict "forward public, drop private": only adverts, traces and group

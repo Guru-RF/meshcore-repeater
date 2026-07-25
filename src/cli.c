@@ -55,6 +55,8 @@ void cli_banner(const cli_ctx_t *ctx)
            ctx->cfg->coding_rate, ctx->cfg->tx_power, ctx->cfg->sync_word);
     printf("  policy: forward public-only, %d public channel(s) - adverts always, "
            "private msgs dropped\n", ctx->cfg->n_public_channels);
+    printf("  ping/pong %s   verbose %s\n",
+           ctx->cfg->ping_pong ? "on" : "off", ctx->cfg->verbose ? "on" : "off");
     printf("  type 'help' for commands.\n\n");
     fflush(stdout);
 }
@@ -105,6 +107,10 @@ static void cmd_status(cli_ctx_t *ctx)
            (unsigned long long)s->fwd_grp_public, (unsigned long long)s->fwd_denied,
            (unsigned long long)s->fwd_denied_dm, (unsigned long long)s->fwd_denied_grp,
            (unsigned long long)s->fwd_denied_other, (unsigned long long)s->grp_mac_fail);
+    printf("ping/pong : %s  ping-seen %llu  pong-sent %llu   verbose %s\n",
+           ctx->cfg->ping_pong ? "on" : "off",
+           (unsigned long long)s->ping_seen, (unsigned long long)s->pong_sent,
+           ctx->cfg->verbose ? "on" : "off");
     printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu\n",
            (unsigned long long)s->tx_total, (unsigned long long)s->tx_cad_busy,
            (unsigned long long)s->tx_queue_full, (unsigned long long)s->adverts_sent);

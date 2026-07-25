@@ -107,6 +107,19 @@ int mc_advert_extract(const mc_packet_t *pkt, uint8_t *type, char *name, size_t 
     return 0;
 }
 
+bool mc_advert_extract_location(const mc_packet_t *pkt, double *lat, double *lon)
+{
+    if (pkt->payload_len < ADV_DATA_OFF)
+        return false;
+    const uint8_t *app = &pkt->payload[ADV_DATA_OFF];
+    size_t app_len = pkt->payload_len - ADV_DATA_OFF;
+    if (app_len < 9 || !(app[0] & ADV_LATLON_MASK))
+        return false;
+    if (lat) *lat = (double)rd_i32le(&app[1]) / 1e6;
+    if (lon) *lon = (double)rd_i32le(&app[5]) / 1e6;
+    return true;
+}
+
 bool mc_advert_verify(const mc_packet_t *pkt, uint8_t out_pub[MC_PUB_KEY_SIZE])
 {
     if (pkt_payload_type(pkt) != PAYLOAD_TYPE_ADVERT)
