@@ -2,8 +2,9 @@
 
 A plain-C **[MeshCore](https://meshcore.co.uk) ham-radio repeater** for the
 **Raspberry Pi**, built for the **[RF.Guru](https://rf.guru) MeshCore 30 dBm
-(1 W) hat** — a 70 cm Semtech **SX1268** board with a filtered, RF-shielded
-front end (*soon available; currently in pre-production testing*).
+(1 W) hat** — a 70 cm Semtech **SX1268** board with a filtered, surge- and
+ESD-protected, RF-shielded front end (*soon available; currently in
+pre-production testing*).
 
 It implements the **[IARU Region 1 ham-MeshCore RFC](https://github.com/Guru-RF/meshcore-rfc-iaru-r1)**:
 a single dedicated 70 cm ham-only frequency — **434.890 MHz, 62.5 kHz, SF8,
@@ -71,9 +72,10 @@ The forwarding constants match MeshCore (`Mesh.cpp`):
 This repeater targets the **[RF.Guru](https://rf.guru) MeshCore 30 dBm (1 W)
 hat** — an SX1268 Raspberry Pi HAT with a clean, protected 70 cm front end:
 
-- a **Taoglas DBP.433.T.A.30** 433 MHz dielectric band-pass filter;
+- a **2RL090M-5-ST5** gas discharge tube (GDT, 90 V, 5 kA, ~1 pF) on the antenna
+  for surge / lightning protection — its ~1 pF capacitance barely loads the RF;
 - a **TPESD5V0R1BBSFYL** bidirectional low-capacitance ESD-protection diode;
-- a **2RL090M-5-ST5** RF part on the antenna path;
+- a **Taoglas DBP.433.T.A.30** 433 MHz dielectric band-pass filter;
 - housed in a **machined aluminium case for RF shielding**.
 
 *Pre-production — soon available from [rf.guru](https://rf.guru).* The firmware
