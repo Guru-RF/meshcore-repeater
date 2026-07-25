@@ -54,9 +54,18 @@ $(CRYPTO_OBJ): CFLAGS := -O2 -std=c11 -w
 $(BIN): $(DAEMON_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(DAEMON_OBJ) $(LDLIBS_DAEMON)
 
-# standalone control client (no radio/crypto deps, builds anywhere)
+# standalone control client (no radio/crypto deps, builds anywhere).
+# Uses GNU readline for tab-completion + history when available (libreadline-dev);
+# falls back to plain line input otherwise.
+READLINE_OK := $(shell test -e /usr/include/readline/readline.h && echo 1)
+ifeq ($(READLINE_OK),1)
 $(CLI): tools/meshcore-cli.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DHAVE_READLINE -o $@ $< -lreadline
+else
+$(CLI): tools/meshcore-cli.c
+	@echo "note: building $(CLI) without readline (install libreadline-dev for tab-completion)"
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $<
+endif
 
 selftest: $(TEST_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(TEST_OBJ) $(LDLIBS_TEST)

@@ -298,6 +298,11 @@ The port is bound to `127.0.0.1` only (never the network); any local user can
 use it, so it's meant for a single-admin repeater host. Set `control_port = 0`
 to disable it.
 
+In interactive mode `meshcore-cli` supports **tab-completion** (commands,
+`blacklist` sub-commands, and `set`/`get` keys) and history when built against
+GNU readline — install `libreadline-dev` before `make` for it (otherwise it
+falls back to plain line input, and the build prints a note).
+
 **Blacklist / moderation:** `blacklist add <name>` ignores a node by its
 advertised / public-channel name — its adverts are neither relayed nor
 registered as neighbours, and its public messages are dropped (and not answered

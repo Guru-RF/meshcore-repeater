@@ -20,6 +20,69 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#ifdef HAVE_READLINE
+#include <readline/readline.h>
+#include <readline/history.h>
+
+/* Tab-completion tables (kept in sync with the repeater's CLI by hand). */
+static const char *COMMANDS[] = {
+    "help", "status", "stats", "neighbors", "channels", "blacklist",
+    "freq", "set", "get", "advert", "save", "reload", "quit", "exit", NULL
+};
+static const char *BL_SUB[] = { "add", "remove", "list", NULL };
+static const char *CFG_KEYS[] = {
+    "frequency", "bandwidth", "spreading_factor", "coding_rate", "tx_power",
+    "preamble", "sync_word", "crc", "iq_inverted", "use_cad", "tcxo_voltage",
+    "ocp", "name", "advert_interval", "forward", "ping_pong", "control_port",
+    "location", "latitude", "longitude", "public_channel", "blacklist", NULL
+};
+
+static const char **g_list;   /* which table the active generator walks */
+
+static char *list_generator(const char *text, int state)
+{
+    static int idx, len;
+    if (!state) { idx = 0; len = (int)strlen(text); }
+    const char *s;
+    while ((s = g_list[idx])) {
+        idx++;
+        if (strncmp(s, text, (size_t)len) == 0)
+            return strdup(s);
+    }
+    return NULL;
+}
+
+/* number of whitespace-separated words fully before position `upto` */
+static int words_before(const char *s, int upto)
+{
+    int w = 0, in = 0;
+    for (int i = 0; i < upto; i++) {
+        if (s[i] == ' ' || s[i] == '\t') in = 0;
+        else if (!in) { in = 1; w++; }
+    }
+    return w;
+}
+
+static char **mc_completer(const char *text, int start, int end)
+{
+    (void)end;
+    rl_attempted_completion_over = 1;         /* never fall back to filenames */
+    int w = words_before(rl_line_buffer, start);
+    if (w == 0) {                             /* the command itself */
+        g_list = COMMANDS;
+        return rl_completion_matches(text, list_generator);
+    }
+    if (w == 1) {                             /* first argument */
+        char first[32] = {0};
+        sscanf(rl_line_buffer, "%31s", first);
+        if (!strcasecmp(first, "blacklist")) { g_list = BL_SUB;   return rl_completion_matches(text, list_generator); }
+        if (!strcasecmp(first, "set") ||
+            !strcasecmp(first, "get"))        { g_list = CFG_KEYS; return rl_completion_matches(text, list_generator); }
+    }
+    return NULL;
+}
+#endif /* HAVE_READLINE */
+
 static int send_command(int port, const char *cmd)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -73,9 +136,21 @@ int main(int argc, char **argv)
     }
 
     /* interactive: one line -> one command */
-    char line[512];
     fprintf(stderr, "meshcore-cli -> 127.0.0.1:%d  (commands go to the repeater; "
                     "'exit' quits this client)\n", port);
+#ifdef HAVE_READLINE
+    rl_attempted_completion_function = mc_completer;
+    char *l;
+    while ((l = readline("meshcore> ")) != NULL) {
+        if (*l) {
+            add_history(l);
+            if (!strcmp(l, "exit")) { free(l); break; }
+            send_command(port, l);
+        }
+        free(l);
+    }
+#else
+    char line[512];
     while (fgets(line, sizeof(line), stdin)) {
         line[strcspn(line, "\r\n")] = '\0';
         if (line[0] == '\0')
@@ -84,5 +159,6 @@ int main(int argc, char **argv)
             break;
         send_command(port, line);
     }
+#endif
     return 0;
 }
