@@ -12,6 +12,7 @@
 #include "cli.h"
 #include "log.h"
 #include "util.h"
+#include "aprsis.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,6 +192,11 @@ int main(int argc, char **argv)
     mc_mesh_t mesh;
     mesh_init(&mesh, &id, &cfg);
 
+    /* APRS-IS iGate (optional) */
+    mc_aprsis aprs;
+    if (cfg.aprs_enable && aprsis_init(&aprs, &cfg, id.pub) == 0)
+        mesh.aprs = &aprs;
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -256,12 +262,15 @@ int main(int argc, char **argv)
             data_led_off = 0;
         }
 
-        /* 4. local CLI: stdin (interactive) + control socket (non-blocking) */
-        struct pollfd pfd[2];
+        /* 4. local CLI + control socket + APRS-IS (all non-blocking) */
+        struct pollfd pfd[3];
         int nfds = 0;
-        int stdin_slot = -1, ctrl_slot = -1;
+        int stdin_slot = -1, ctrl_slot = -1, aprs_slot = -1;
+        short aprs_ev = 0;
+        int aprs_fd = mesh.aprs ? aprsis_pollfd(mesh.aprs, &aprs_ev) : -1;
         if (stdin_open) { stdin_slot = nfds; pfd[nfds].fd = STDIN_FILENO; pfd[nfds].events = POLLIN; nfds++; }
         if (ctrl_fd >= 0) { ctrl_slot = nfds; pfd[nfds].fd = ctrl_fd; pfd[nfds].events = POLLIN; nfds++; }
+        if (aprs_fd >= 0) { aprs_slot = nfds; pfd[nfds].fd = aprs_fd; pfd[nfds].events = aprs_ev; nfds++; }
 
         if (nfds > 0) {
             int pr = poll(pfd, nfds, (r == 1) ? 0 : 5);
@@ -274,10 +283,15 @@ int main(int argc, char **argv)
         } else {
             hal_delay_ms(5);
         }
+        /* advance the APRS-IS client every iteration (connect/beacon timers) */
+        if (mesh.aprs)
+            aprsis_service(mesh.aprs, now, aprs_slot >= 0 ? pfd[aprs_slot].revents : 0);
     }
 
     if (ctrl_fd >= 0)
         close(ctrl_fd);
+    if (mesh.aprs)
+        aprsis_close(mesh.aprs);
 
     log_info("shutting down");
     hal_led_data(false);

@@ -340,6 +340,44 @@ moderation, not authentication. Changes are saved to the config immediately.
 
 ---
 
+## APRS-IS iGate
+
+With `aprs_enable = true` the repeater becomes a **receive-only APRS iGate**: it
+connects to APRS-IS, beacons its own position, and gates the position of any
+MeshCore node whose advert carries GPS **and whose name is a valid amateur
+callsign** onto the global APRS network (visible on [aprs.fi](https://aprs.fi)).
+
+```
+aprs_call     = ON6URE-6            # your callsign — login + beacon source
+aprs_passcode = auto                # computed from aprs_call (or set the number)
+aprs_altitude = 5                   # metres, for /A=
+location = true, latitude/longitude # the iGate beacon reuses these
+```
+
+How it works (all verified against the APRS spec / APRS-IS docs):
+
+- **Login** uses your callsign + passcode (`auto` runs the standard passcode
+  algorithm). Injecting **requires a valid passcode** — an unverified session is
+  silently dropped by the server.
+- **Own beacon** — `ON6URE-6>APRFGR,TCPIP*:!<pos>` with the Rx-iGate symbol `R&`,
+  every `aprs_beacon_interval` (default 30 min).
+- **Gated nodes** — `<NODECALL>APRFGR,qAO,ON6URE-6:!<pos> MeshCore <type>`, symbol
+  `Mn`. `qAO` honestly marks it receive-only (we can't gate APRS→RF). Rate-limited
+  per node (`aprs_node_rate`), and the repeater never gates its own advert.
+- **Callsign filter** — only names shaped like real ham calls (prefix+digit+suffix,
+  optional `-SSID`) are gated, so free-text node names never pollute APRS-IS.
+
+> Requires an amateur licence — you transmit onto APRS-IS under your own
+> callsign. `aprs_call` must be unique on APRS-IS. The gate is receive-only
+> toward APRS (MeshCore is never fed from the internet). A node gated under a
+> bare callsign that is *also* active on 144.800 MHz APRS will show two
+> positions on aprs.fi — that's inherent to callsign-based gating.
+
+Networking is non-blocking and shares the main loop (no extra thread); the
+APRS-IS host is resolved once at startup so DNS never stalls the radio.
+
+---
+
 ## Frequency / legal notes
 
 - The defaults follow the
@@ -383,6 +421,8 @@ src/
   config.[ch]     config file parse + runtime get/set
   cli.[ch]        local operator console
   hmac_sha256.[ch] HMAC-SHA256 (public-channel MAC verify)
+  aprs.[ch]       APRS base-91 compressed position/timestamp
+  aprsis.[ch]     APRS-IS RX iGate (passcode, qAO gating, own beacon)
   log.[ch], util.[ch]
   crypto/         vendored TweetNaCl (Ed25519/SHA-512) + B-Con SHA-256 + tiny-AES-128
 tools/

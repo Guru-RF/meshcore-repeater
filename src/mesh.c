@@ -6,6 +6,7 @@
 #include "log.h"
 #include "util.h"
 #include "hmac_sha256.h"
+#include "aprsis.h"
 #include "crypto/aes128.h"
 
 #include <ctype.h>
@@ -363,15 +364,20 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         }
         m->stats.rx_advert++;
         neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
+
+        double lat, lon;
+        bool has_loc = mc_advert_extract_location(&pkt, &lat, &lon);
         if (m->cfg->verbose) {
-            double lat, lon;
-            if (mc_advert_extract_location(&pkt, &lat, &lon))
+            if (has_loc)
                 log_info("[advert] '%s' type=%u  loc %.5f,%.5f  rssi %d snr %.1f",
                          aname[0] ? aname : "?", atype, lat, lon, rssi_dbm, snr_q / 4.0);
             else
                 log_info("[advert] '%s' type=%u  rssi %d snr %.1f",
                          aname[0] ? aname : "?", atype, rssi_dbm, snr_q / 4.0);
         }
+        /* APRS-IS iGate: gate a node's advertised position (validated inside) */
+        if (m->aprs && has_loc)
+            aprsis_gate_node(m->aprs, hal_millis(), aname, atype, lat, lon, pub);
     }
 
     if (pt == PAYLOAD_TYPE_TRACE) {

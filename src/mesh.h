@@ -85,6 +85,8 @@ typedef struct {
 
     mesh_stats_t stats;
     uint64_t     start_ms;
+
+    struct mc_aprsis *aprs;   /* APRS-IS iGate (NULL = feature disabled) */
 } mc_mesh_t;
 
 void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg);

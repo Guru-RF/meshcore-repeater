@@ -74,6 +74,20 @@ typedef struct {
     char     blacklist[MC_MAX_BLACKLIST][MC_BLACKLIST_NAME_LEN]; /* ignored node names */
     int      n_blacklist;
     uint16_t control_port;       /* TCP 127.0.0.1 control port (0 = disabled) */
+
+    /* ---- APRS-IS RX iGate: gate adverts-with-coordinates to APRS-IS ---- */
+    bool     aprs_enable;
+    char     aprs_call[16];      /* login + own-beacon source SSID call (e.g. ON6URE-6) */
+    char     aprs_passcode[12];  /* "auto" (compute) | decimal | -1 (receive-only) */
+    char     aprs_host[96];      /* APRS-IS Tier-2 server */
+    uint16_t aprs_port;
+    char     aprs_tocall[12];    /* software id / destination (APRFGR) */
+    char     aprs_symbol[8];     /* iGate map symbol "table+code" (R&) */
+    char     aprs_node_symbol[8];/* gated-node symbol (Mn) */
+    char     aprs_comment[96];   /* own-beacon comment (/A= appended) */
+    double   aprs_altitude;      /* metres, for the /A= field */
+    uint32_t aprs_beacon_interval; /* seconds between own beacons (0 = off) */
+    uint32_t aprs_node_rate;     /* min seconds between re-gating the same node */
 } mc_config_t;
 
 void config_defaults(mc_config_t *cfg);

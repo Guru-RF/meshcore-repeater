@@ -56,6 +56,20 @@ void config_defaults(mc_config_t *cfg)
     cfg->ping_pong       = false;      /* opt-in: answer public "ping" with "pong" */
     cfg->verbose         = false;      /* set at runtime by the -v flag */
     cfg->control_port    = 4403;       /* local control interface on 127.0.0.1 (0 = off) */
+
+    /* APRS-IS RX iGate (off by default; own beacon reuses latitude/longitude) */
+    cfg->aprs_enable         = false;
+    cfg->aprs_call[0]        = '\0';
+    snprintf(cfg->aprs_passcode, sizeof(cfg->aprs_passcode), "%s", "auto");
+    snprintf(cfg->aprs_host, sizeof(cfg->aprs_host), "%s", "belgium.aprs2.net");
+    cfg->aprs_port           = 14580;
+    snprintf(cfg->aprs_tocall, sizeof(cfg->aprs_tocall), "%s", "APRFGR");
+    snprintf(cfg->aprs_symbol, sizeof(cfg->aprs_symbol), "%s", "R&");
+    snprintf(cfg->aprs_node_symbol, sizeof(cfg->aprs_node_symbol), "%s", "Mn");
+    snprintf(cfg->aprs_comment, sizeof(cfg->aprs_comment), "%s", "meshcore-repeater 1.0 https://rf.guru");
+    cfg->aprs_altitude       = 0.0;
+    cfg->aprs_beacon_interval = 1800;  /* 30 min */
+    cfg->aprs_node_rate      = 900;    /* 15 min per node */
 }
 
 /* ---- blacklist helpers ---- */
@@ -285,6 +299,20 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
     if (!strcasecmp(key, "blacklist")) { return config_blacklist_add(cfg, val) < 0 ? -2 : 0; }
 
+    /* ---- APRS-IS iGate ---- */
+    if (!strcasecmp(key, "aprs_enable")) { if (!parse_bool(val, &b)) return -2; cfg->aprs_enable = b; return 0; }
+    if (!strcasecmp(key, "aprs_call")) { snprintf(cfg->aprs_call, sizeof(cfg->aprs_call), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_passcode")) { snprintf(cfg->aprs_passcode, sizeof(cfg->aprs_passcode), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_host")) { snprintf(cfg->aprs_host, sizeof(cfg->aprs_host), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->aprs_port = (uint16_t)u; return 0; }
+    if (!strcasecmp(key, "aprs_tocall")) { snprintf(cfg->aprs_tocall, sizeof(cfg->aprs_tocall), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_symbol")) { snprintf(cfg->aprs_symbol, sizeof(cfg->aprs_symbol), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_node_symbol")) { snprintf(cfg->aprs_node_symbol, sizeof(cfg->aprs_node_symbol), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_comment")) { snprintf(cfg->aprs_comment, sizeof(cfg->aprs_comment), "%s", val); return 0; }
+    if (!strcasecmp(key, "aprs_altitude")) { if (!parse_double(val, &d)) return -2; cfg->aprs_altitude = d; return 0; }
+    if (!strcasecmp(key, "aprs_beacon_interval")) { if (!parse_u32(val, &u)) return -2; cfg->aprs_beacon_interval = u; return 0; }
+    if (!strcasecmp(key, "aprs_node_rate")) { if (!parse_u32(val, &u)) return -2; cfg->aprs_node_rate = u; return 0; }
+
     return -1; /* unknown key */
 }
 
@@ -326,6 +354,18 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     if (!strcasecmp(key, "blacklist"))        { snprintf(out, outsz, "%d entries", cfg->n_blacklist); return 0; }
+    if (!strcasecmp(key, "aprs_enable"))      { snprintf(out, outsz, "%s", cfg->aprs_enable ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "aprs_call"))        { snprintf(out, outsz, "%s", cfg->aprs_call); return 0; }
+    if (!strcasecmp(key, "aprs_passcode"))    { snprintf(out, outsz, "%s", cfg->aprs_passcode); return 0; }
+    if (!strcasecmp(key, "aprs_host"))        { snprintf(out, outsz, "%s", cfg->aprs_host); return 0; }
+    if (!strcasecmp(key, "aprs_port"))        { snprintf(out, outsz, "%u", cfg->aprs_port); return 0; }
+    if (!strcasecmp(key, "aprs_tocall"))      { snprintf(out, outsz, "%s", cfg->aprs_tocall); return 0; }
+    if (!strcasecmp(key, "aprs_symbol"))      { snprintf(out, outsz, "%s", cfg->aprs_symbol); return 0; }
+    if (!strcasecmp(key, "aprs_node_symbol")) { snprintf(out, outsz, "%s", cfg->aprs_node_symbol); return 0; }
+    if (!strcasecmp(key, "aprs_comment"))     { snprintf(out, outsz, "%s", cfg->aprs_comment); return 0; }
+    if (!strcasecmp(key, "aprs_altitude"))    { snprintf(out, outsz, "%g", cfg->aprs_altitude); return 0; }
+    if (!strcasecmp(key, "aprs_beacon_interval")) { snprintf(out, outsz, "%u", cfg->aprs_beacon_interval); return 0; }
+    if (!strcasecmp(key, "aprs_node_rate"))   { snprintf(out, outsz, "%u", cfg->aprs_node_rate); return 0; }
     return -1;
 }
 
@@ -396,7 +436,10 @@ int config_save(const mc_config_t *cfg, const char *path)
         "spi_dev", "spi_speed", "gpio_chip", "gpio_reset", "gpio_busy", "gpio_dio1",
         "gpio_nss", "rf_switch", "gpio_rxen", "gpio_txen", "use_leds", "gpio_led_on",
         "gpio_led_data", "name", "key_file", "location", "latitude",
-        "longitude", "advert_interval", "forward", "ping_pong", "control_port", NULL
+        "longitude", "advert_interval", "forward", "ping_pong", "control_port",
+        "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
+        "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
+        "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate", NULL
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {

@@ -14,6 +14,8 @@
 #include "../src/sx126x.h"
 #include "../src/util.h"
 #include "../src/hmac_sha256.h"
+#include "../src/aprs.h"
+#include "../src/aprsis.h"
 #include "../src/crypto/sha256.h"
 #include "../src/crypto/aes128.h"
 
@@ -434,6 +436,38 @@ static void test_blacklist(void)
           "blacklisted advert dropped (not registered as neighbour)");
 }
 
+static void test_aprs(void)
+{
+    printf("[aprs: passcode, callsign filter, compressed position]\n");
+
+    /* APRS-IS passcode known-answer vectors (aprslib) + this operator's call */
+    CHECK(aprsis_passcode("N0CALL") == 13023, "passcode N0CALL=13023 (got %d)", aprsis_passcode("N0CALL"));
+    CHECK(aprsis_passcode("TESTCALL") == 31742, "passcode TESTCALL=31742");
+    CHECK(aprsis_passcode("SUCHCALL") == 27890, "passcode SUCHCALL=27890");
+    CHECK(aprsis_passcode("WOW") == 29613, "passcode WOW=29613");
+    CHECK(aprsis_passcode("ON6URE") == 22716 && aprsis_passcode("ON6URE-6") == 22716,
+          "passcode ON6URE = ON6URE-6 = 22716 (SSID stripped)");
+
+    /* callsign filter: gate only plausible ham calls, upper-cased */
+    char cs[12];
+    CHECK(aprsis_valid_callsign("ON6URE-6", cs, sizeof(cs)) && !strcmp(cs, "ON6URE-6"), "accept ON6URE-6");
+    CHECK(aprsis_valid_callsign("on0xyz", cs, sizeof(cs)) && !strcmp(cs, "ON0XYZ"), "accept + upcase on0xyz");
+    CHECK(aprsis_valid_callsign("W1AW", cs, sizeof(cs)) &&
+          aprsis_valid_callsign("2E0ABC", cs, sizeof(cs)) &&
+          aprsis_valid_callsign("DL1ABC-9", cs, sizeof(cs)), "accept W1AW / 2E0ABC / DL1ABC-9");
+    CHECK(!aprsis_valid_callsign("HamRepeater", cs, sizeof(cs)), "reject HamRepeater");
+    CHECK(!aprsis_valid_callsign("ROOM", cs, sizeof(cs)) &&
+          !aprsis_valid_callsign("K3", cs, sizeof(cs)) &&
+          !aprsis_valid_callsign("SENSOR3", cs, sizeof(cs)), "reject ROOM / K3 / SENSOR3");
+
+    /* base-91 compressed position (worked example verified in the design workflow) */
+    char pos[64];
+    CHECK(aprs_make_position(pos, sizeof(pos), 51.2095, 2.9247, -1, -1, "Mn") == 0 &&
+          !strcmp(pos, "M4XB$O69En  A"), "compressed position ON0XYZ (got '%s')", pos);
+    CHECK(aprs_make_position(pos, sizeof(pos), 51.151987, 2.765479, -1, -1, "R&") == 0,
+          "compressed iGate beacon position builds (got '%s')", pos);
+}
+
 static void test_crypto(void)
 {
     printf("[crypto: hmac-sha256, channel hash, base64]\n");
@@ -548,6 +582,7 @@ int main(void)
     test_mesh_policy();
     test_ping_pong();
     test_blacklist();
+    test_aprs();
     test_crypto();
     test_airtime();
     test_config();
