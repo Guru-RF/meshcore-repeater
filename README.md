@@ -142,19 +142,32 @@ sudo raspi-config        # Interface Options -> SPI -> enable   (or:)
 
 ---
 
-## Build
+## Quick install (Raspberry Pi)
 
-On the Raspberry Pi:
+One command does everything — installs prerequisites, enables SPI, builds,
+self-tests, and installs the service under `/opt` as a dedicated `meshcore` user:
 
 ```
-sudo apt install build-essential libgpiod-dev
-make                 # -> ./meshcore-repeater
+git clone https://github.com/Guru-RF/meshcore-repeater && cd meshcore-repeater
+sudo ./install.sh
+```
+
+Then edit `/opt/meshcore-repeater/meshcore-repeater.conf` (callsign, frequency,
+optional APRS iGate) and `sudo systemctl start meshcore-repeater`. See
+[Install as a service](#install-as-a-service) for what it sets up.
+
+## Build (manual)
+
+```
+sudo apt install build-essential pkg-config libgpiod-dev libreadline-dev
+make                 # -> ./meshcore-repeater + ./meshcore-cli
 make test            # host self-test (no hardware required)
 ```
 
 `make test` builds and runs the protocol self-test (wire format, Ed25519,
-advert sign/verify, dedup, flood/direct forwarding). It needs no radio and runs
-on any POSIX host.
+advert sign/verify, dedup, forwarding, APRS passcode/position). It needs no
+radio and runs on any POSIX host. `libreadline-dev` is optional (enables
+`meshcore-cli` tab-completion).
 
 ---
 
