@@ -51,7 +51,7 @@ void config_defaults(mc_config_t *cfg)
     cfg->has_location    = false;
     cfg->latitude        = 0.0;
     cfg->longitude       = 0.0;
-    cfg->advert_interval = 7200;       /* 2 h */
+    cfg->advert_interval = 1800;       /* 30 min: mandatory ham >=1 ID/hour, w/ margin */
     cfg->forward         = true;
     cfg->ping_pong       = false;      /* opt-in: answer public "ping" with "pong" */
     cfg->verbose         = false;      /* set at runtime by the -v flag */

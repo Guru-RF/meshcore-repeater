@@ -234,7 +234,7 @@ the repeater joins that network out of the box:
 | `tx_power` | `22` | SX1268 **chip** dBm (the hat's PA reaches ~+30 dBm / 1 W) |
 | `sync_word` | `private` | MeshCore default (0x1424); `public` = 0x3444 |
 | `use_cad` | `true` | listen-before-talk |
-| `advert_interval` | `7200` | seconds between self-adverts (0 = off) |
+| `advert_interval` | `1800` | seconds between self-adverts (0 = off); 30 min guarantees the mandatory ≥1 ID/hour with margin |
 | `name` | `HamRepeater` | advertised node name |
 | `public_channel` | *Public* | public channel key(s) to relay (repeatable) — see below |
 | `ping_pong` | `false` | answer `ping` on a public channel with `pong` |
