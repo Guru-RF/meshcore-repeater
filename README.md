@@ -144,8 +144,43 @@ sudo raspi-config        # Interface Options -> SPI -> enable   (or:)
 
 ## Quick install (Raspberry Pi)
 
-One command does everything — installs prerequisites, enables SPI, builds,
-self-tests, and installs the service under `/opt` as a dedicated `meshcore` user:
+One line on a fresh **Raspberry Pi OS (64-bit)** image:
+
+```bash
+wget -qO /tmp/install-repeater.sh https://raw.githubusercontent.com/Guru-RF/meshcore-repeater/main/install-repeater.sh && sudo bash /tmp/install-repeater.sh
+```
+
+That is the whole install. `install-repeater.sh`:
+
+1. **Upgrades the Pi** — `apt-get update`, `full-upgrade`, `autoremove`, `clean`.
+2. **Installs the dependencies** — `build-essential`, `git`, `curl`, and
+   [gum](https://github.com/charmbracelet/gum) for the prompts (distro package
+   first, then Charm's apt repo; plain text prompts if neither is reachable, so
+   the install never dead-ends on a cosmetic dependency). The radio build deps
+   (`libgpiod-dev`, `libreadline-dev`) are pulled in by `install.sh`.
+3. **Builds and installs** — compile, host self-test, then binary + default
+   config + `meshcore-repeater.service` into `/opt/meshcore-repeater/`, run by a
+   dedicated `meshcore` user and enabled on boot.
+4. **Enables SPI and the LED GPIOs** in `/boot/firmware/config.txt` (the LED
+   lines come from `gpio_led_on`/`gpio_led_data`, default `19`/`26`). The file it
+   found is kept as `config.txt.meshcore.bak`.
+5. **Asks for your callsign** — it becomes the repeater's node name, i.e. its
+   **on-air ID** (amateur radio requires an automatic station to identify) — plus
+   an optional [position](#finding-your-position) and an optional APRS-IS iGate
+   (`ON0RFG` + SSID `5` → `ON0RFG-5`, passcode derived automatically). It writes
+   them into `meshcore-repeater.conf`.
+6. **Offers to reboot**, which SPI needs before `/dev/spidev0.x` appears.
+
+Run it again any time to upgrade: your config is preserved and the prompts are
+pre-filled with what is already configured, so you can press Enter straight
+through.
+
+> `wget -qO- … | sudo bash` works too — the script notices it was piped, where
+> stdin is the script rather than you, and re-attaches to your terminal so the
+> prompts still work.
+
+Prefer to do it from a checkout (skips the apt upgrade and the interactive
+prompts — edit the config by hand afterwards)?
 
 ```
 git clone https://github.com/Guru-RF/meshcore-repeater && cd meshcore-repeater
@@ -155,6 +190,30 @@ sudo ./install.sh
 Then edit `/opt/meshcore-repeater/meshcore-repeater.conf` (callsign, frequency,
 optional APRS iGate) and `sudo systemctl start meshcore-repeater`. See
 [Install as a service](#install-as-a-service) for what it sets up.
+
+### Finding your position
+
+Nobody knows their own latitude, so the optional position step takes an address
+and looks it up:
+
+```text
+Location -- a full street address gives the most accurate fix, and Belgium is
+assumed if you leave the country off. Empty to type coordinates yourself:
+> Grote Markt 1, Brugge
+
+Looking up Grote Markt 1, Brugge, Belgium ...
+Historium, 1, Markt, Brugge-Centrum, Brugge, West-Vlaanderen, 8000, België
+Found 51.2092401, 3.2250659
+Ground elevation there is about 13 m
+```
+
+Geocoding is [Nominatim](https://nominatim.openstreetmap.org) and the elevation
+comes from [Open-Meteo](https://open-meteo.com) — both free, neither needs an API
+key. Paste `51.2194, 4.4025` straight in and it skips the lookup. The step
+soft-fails: no `curl`, no internet or no match keeps whatever the config already
+holds, and the address you type is never stored, only the coordinates. Those
+coordinates go out in every advert, so round them off if you would rather not
+publish your doorstep.
 
 ## Build (manual)
 
