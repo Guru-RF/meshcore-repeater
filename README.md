@@ -471,12 +471,20 @@ goes down to the household; your device's advert goes up to the mesh).
 
 ```
 role               = hotspot
+name               = ON6URE-1      # a hotspot may carry an SSID (see below)
 affinity           = ON0XYZ        # the real repeater(s) you bridge to (repeatable)
 home               = ON6URE*       # your devices (wildcard, repeatable)
 home               = ON4ABC*       # a friend's / neighbour's devices
 hotspot_power_high = 22            # uplink: full power (chip dBm; PA adds gain)
 hotspot_power_low  = -9            # downlink: lowest usable for local delivery
 ```
+
+**Naming.** A repeater IDs with a **bare callsign** (`name = ON0RFG`). A hotspot
+may append an SSID **`-NN`** (`00`–`99`, e.g. `name = ON6URE-1`) so **one operator
+can run several**, each a distinct on-air ID — allowed only in hotspot mode. The
+`home = ON6URE*` wildcard already covers every one of them. It is advisory: the
+daemon logs a warning if a repeater name carries an SSID (or a hotspot SSID is not
+`00`–`99`) but never refuses to run.
 
 > Both roles need an amateur licence and keep the strict content policy (it's the
 > ham band — no private/encrypted). The power values are **chip** dBm (the PA adds

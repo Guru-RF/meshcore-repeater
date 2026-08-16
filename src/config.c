@@ -107,6 +107,46 @@ bool config_is_affinity(const mc_config_t *cfg, const char *name)
     return false;
 }
 
+/* A repeater IDs with a bare callsign; a hotspot may append "-NN" (00..99) so
+ * one operator can run several, each a distinct on-air ID. Only that suffix
+ * convention is enforced here. */
+bool config_valid_node_name(const char *name, mc_role_t role, char *why, size_t whysz)
+{
+    if (why && whysz) why[0] = '\0';
+    if (!name || !name[0]) {
+        if (why) snprintf(why, whysz, "node name is empty");
+        return false;
+    }
+    const char *dash = strchr(name, '-');
+    if (!dash)
+        return true;                        /* bare name: fine in either role */
+
+    if (role != ROLE_HOTSPOT) {
+        if (why) snprintf(why, whysz,
+            "name '%s' has an SSID suffix, but a repeater IDs with a bare "
+            "callsign; the '-NN' form is only for hotspots", name);
+        return false;
+    }
+    if (dash == name) {
+        if (why) snprintf(why, whysz, "name '%s' has no callsign before the '-'", name);
+        return false;
+    }
+    const char *ssid = dash + 1;
+    size_t sl = strlen(ssid);              /* 1-2 digits => value is always 00..99 */
+    if (sl < 1 || sl > 2) {
+        if (why) snprintf(why, whysz,
+            "name '%s': a hotspot SSID must be 1-2 digits (00..99)", name);
+        return false;
+    }
+    for (size_t i = 0; i < sl; i++)
+        if (ssid[i] < '0' || ssid[i] > '9') {
+            if (why) snprintf(why, whysz,
+                "name '%s': a hotspot SSID must be numeric (00..99)", name);
+            return false;
+        }
+    return true;                            /* CALL-NN, 00..99, hotspot: good */
+}
+
 /* Append a pattern to a fixed name-list (dedup, bounded). 0 ok/dup, -2 full. */
 static int list_add(char list[][MC_NAME_PAT_LEN], int *n, int max, const char *val)
 {
@@ -495,6 +535,12 @@ int config_load(mc_config_t *cfg, const char *path)
             log_warn("config %s:%d: invalid value for '%s': '%s'", path, lineno, key, val);
     }
     fclose(f);
+
+    /* Nudge on the callsign/SSID convention once name + role are both final.
+     * Never fatal - a bad ID is a compliance nit, not a reason to refuse to run. */
+    char why[128];
+    if (!config_valid_node_name(cfg->name, cfg->role, why, sizeof(why)))
+        log_warn("config: %s", why);
     return 0;
 }
 

@@ -662,6 +662,44 @@ static void test_config(void)
           "reject a wrong-length channel key");
 }
 
+static void test_node_name(void)
+{
+    printf("[node name: bare callsign (repeater) vs CALL-NN SSID (hotspot only)]\n");
+    char why[128];
+#define VALID(n, r) config_valid_node_name((n), (r), why, sizeof(why))
+    /* bare names: fine in either role, no base-shape enforcement */
+    CHECK(VALID("ON6URE", ROLE_REPEATER),      "bare callsign ok for a repeater");
+    CHECK(VALID("ON6URE", ROLE_HOTSPOT),       "bare callsign ok for a hotspot");
+    CHECK(VALID("HamRepeater", ROLE_REPEATER), "no-dash default name does not warn");
+    /* hotspot CALL-NN across the 00..99 range */
+    CHECK(VALID("ON6URE-1",  ROLE_HOTSPOT),    "hotspot CALL-1 ok");
+    CHECK(VALID("ON6URE-0",  ROLE_HOTSPOT),    "hotspot CALL-0 ok");
+    CHECK(VALID("ON6URE-00", ROLE_HOTSPOT),    "hotspot CALL-00 ok");
+    CHECK(VALID("ON6URE-99", ROLE_HOTSPOT),    "hotspot CALL-99 ok");
+    /* the "only for hotspots" rule, with a reason */
+    CHECK(!VALID("ON6URE-6", ROLE_REPEATER),   "a repeater may NOT carry an SSID suffix");
+    CHECK(why[0] != '\0',                      "  ... and it explains why");
+    /* malformed hotspot SSIDs */
+    CHECK(!VALID("ON6URE-100", ROLE_HOTSPOT),  "reject 3-digit SSID");
+    CHECK(!VALID("ON6URE-1A",  ROLE_HOTSPOT),  "reject non-numeric SSID");
+    CHECK(!VALID("ON6URE-",    ROLE_HOTSPOT),  "reject empty SSID");
+    CHECK(!VALID("ON6URE-1-2", ROLE_HOTSPOT),  "reject two-dash SSID");
+    CHECK(!VALID("-5",         ROLE_HOTSPOT),  "reject missing callsign before '-'");
+    CHECK(!VALID("",           ROLE_HOTSPOT),  "reject empty name");
+    (void)VALID("ON6URE-7", ROLE_HOTSPOT);
+    CHECK(why[0] == '\0',                      "why[] is cleared when the name is valid");
+#undef VALID
+
+    /* end to end: config_set never rejects a name (validation is advisory), and
+     * the same name flips valid<->invalid with the role. */
+    mc_config_t c; config_defaults(&c);
+    CHECK(config_set(&c, "name", "ON6URE-3") == 0, "config_set stores any name (advisory only)");
+    config_set(&c, "role", "hotspot");
+    CHECK(config_valid_node_name(c.name, c.role, why, sizeof(why)),  "ON6URE-3 valid once role=hotspot");
+    config_set(&c, "role", "repeater");
+    CHECK(!config_valid_node_name(c.name, c.role, why, sizeof(why)), "ON6URE-3 flagged once role=repeater");
+}
+
 int main(void)
 {
     test_header();
@@ -680,6 +718,7 @@ int main(void)
     test_crypto();
     test_airtime();
     test_config();
+    test_node_name();
 
     printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
            g_fail, g_fail == 1 ? "" : "s");

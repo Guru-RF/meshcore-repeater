@@ -114,6 +114,13 @@ bool config_name_matches(const char *pattern, const char *name);
 bool config_is_home(const mc_config_t *cfg, const char *name);
 bool config_is_affinity(const mc_config_t *cfg, const char *name);
 
+/* Validate the node name against its role. A repeater IDs with a bare callsign;
+ * a hotspot MAY append an SSID "-NN" (00..99) so one operator can run several,
+ * each a distinct on-air ID. Returns true if acceptable, else false with a short
+ * reason in *why. Only the "-NN" convention is enforced (the base callsign shape
+ * is the operator's business - the installer checks that at setup time). */
+bool config_valid_node_name(const char *name, mc_role_t role, char *why, size_t whysz);
+
 void config_defaults(mc_config_t *cfg);
 
 /* Load key=value lines from path over the current contents.
