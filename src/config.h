@@ -22,9 +22,9 @@
 #define MC_MAX_HOME            8
 #define MC_NAME_PAT_LEN        32   /* >= aname[32]/MC_BLACKLIST_NAME_LEN so exact patterns match */
 
-/* Operating role: a full licensed wide-area repeater, or a personal low-power
- * (<=100 mW) hotspot that bridges the operator's own devices to the repeater
- * network with direction-dependent TX power. */
+/* Operating role: a full licensed wide-area repeater, or a personal hotspot that
+ * bridges the operator's own devices to the repeater network with direction-
+ * dependent TX power (full up to the repeater, lowest down to the household). */
 typedef enum { ROLE_REPEATER = 0, ROLE_HOTSPOT = 1 } mc_role_t;
 
 /* A public MeshCore channel the operator has declared forwardable. The AES key
@@ -105,8 +105,8 @@ typedef struct {
     /* own/friend device name patterns (wildcards, e.g. "ON6URE*") the hotspot uplinks */
     char     home[MC_MAX_HOME][MC_NAME_PAT_LEN];
     int      n_home;
-    int8_t   hotspot_power_high; /* uplink chip dBm (household->repeater; keep antenna <=100 mW) */
-    int8_t   hotspot_power_low;  /* downlink chip dBm (repeater->household, lowest usable) */
+    int8_t   hotspot_power_high; /* uplink chip dBm (household->repeater; full power to reach it) */
+    int8_t   hotspot_power_low;  /* downlink chip dBm (repeater->household; lowest usable, <100 mW) */
 } mc_config_t;
 
 /* Case-insensitive name match; a trailing '*' in pattern is a prefix wildcard. */

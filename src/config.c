@@ -71,13 +71,13 @@ void config_defaults(mc_config_t *cfg)
     cfg->aprs_beacon_interval = 1800;  /* 30 min */
     cfg->aprs_node_rate      = 900;    /* 15 min per node */
 
-    /* role: full repeater by default. Hotspot power defaults are deliberately
-     * LOW (safe under 100 mW on any PA) - calibrate up against a meter. */
+    /* role: full repeater by default. Hotspot uplink = full power (reach the
+     * repeater); downlink = lowest usable (local household delivery). */
     cfg->role               = ROLE_REPEATER;
     cfg->n_affinity         = 0;
     cfg->n_home             = 0;
-    cfg->hotspot_power_high = 8;       /* chip dBm; tune so antenna <= 100 mW */
-    cfg->hotspot_power_low  = -9;      /* chip minimum */
+    cfg->hotspot_power_high = 22;      /* uplink: chip max ~ +30 dBm / 1 W at antenna */
+    cfg->hotspot_power_low  = -9;      /* downlink: chip minimum (well under 100 mW) */
 }
 
 static void trim_name(const char *in, char *out, size_t outsz);  /* fwd decl */

@@ -120,8 +120,8 @@ static void learn_affinity(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE])
 /*
  * Hotspot-role forwarding decision. A forwardable packet (per the ham content
  * policy) is further scoped to the operator's personal bridge, and its TX power
- * is set by direction: household->repeater (uplink) = high (<=100 mW),
- * repeater->household (downlink) = low. Returns true to forward.
+ * is set by direction: household->repeater (uplink) = full power (reach the
+ * repeater), repeater->household (downlink) = lowest. Returns true to forward.
  *   - Adverts are classified by advertiser: an affinity repeater -> downlink;
  *     a home device (ON6URE*, friends) -> uplink; anyone else -> drop.
  *   - Group messages are classified by path: an affinity repeater in the path

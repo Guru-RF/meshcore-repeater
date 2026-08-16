@@ -453,15 +453,14 @@ APRS-IS host is resolved once at startup so DNS never stalls the radio.
 ## Roles: repeater vs personal hotspot
 
 `role = repeater` (default) is a full licensed wide-area repeater. `role = hotspot`
-turns it into a **personal low-power bridge** for a licensed operator — a MeshCore
-hotspot in the BIPT personal-use sense (**≤ 100 mW**, same ham band, same strict
-content policy), with **direction-dependent TX power**:
+turns it into a **personal bridge** for a licensed operator (same ham band, same
+strict content policy) with **direction-dependent TX power**:
 
 - Traffic heard **locally from your own devices** (`home = ON6URE*`, plus
   friends/neighbours) is relayed **up** to the repeater network at **full** power
-  (≤ 100 mW). Anything else heard locally is ignored — it only bridges *your* devices.
+  (to reach it). Anything else heard locally is ignored — it only bridges *your* devices.
 - Traffic that arrived **via a real repeater** (`affinity = ON0XYZ`) is relayed
-  back **down** to the household at the **lowest** power.
+  back **down** to the household at the **lowest usable** power.
 
 Direction is read straight from the packet's path: a message carrying an affinity
 repeater's 1-byte path-hash came from the mesh (downlink → low power), otherwise it
@@ -474,13 +473,14 @@ role               = hotspot
 affinity           = ON0XYZ        # the real repeater(s) you bridge to (repeatable)
 home               = ON6URE*       # your devices (wildcard, repeatable)
 home               = ON4ABC*       # a friend's / neighbour's devices
-hotspot_power_high = 8             # chip dBm — calibrate so the antenna is <= 100 mW
-hotspot_power_low  = -9            # lowest usable for local delivery
+hotspot_power_high = 22            # uplink: full power (chip dBm; PA adds gain)
+hotspot_power_low  = -9            # downlink: lowest usable for local delivery
 ```
 
 > Both roles need an amateur licence and keep the strict content policy (it's the
-> ham band — no private/encrypted). The power values are **chip** dBm; calibrate
-> against a meter so the antenna stays under 100 mW (the PA adds gain on top).
+> ham band — no private/encrypted). The power values are **chip** dBm (the PA adds
+> gain on top) — measure with a meter and **check the applicable limits with your
+> local regulator** (a personal hotspot is often power-limited).
 
 ---
 
