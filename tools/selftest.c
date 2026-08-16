@@ -530,6 +530,35 @@ static void test_hotspot(void)
       mesh_on_recv(&m, raw, (size_t)n, -50, 40);
       int g = grp_slot(&m);
       CHECK(g >= 0 && m.txq[g].power_dbm == -5, "msg via affinity repeater downlinked at low power"); }
+
+    /* 5. multiple affinity repeaters (redundancy): both learned; via either -> downlink */
+    { config_set(&cfg, "affinity", "ON0ABC");     /* a 2nd repeater alongside ON0XYZ */
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_identity_t r1, r2; mc_identity_generate(&r1);
+      do { mc_identity_generate(&r2); } while (r2.pub[0] == r1.pub[0]);  /* distinct hashes */
+      mc_advert_info_t info; memset(&info, 0, sizeof(info)); info.type = ADV_TYPE_REPEATER;
+      mc_packet_t adv;
+      info.name = "ON0XYZ"; mc_advert_build(&adv, &r1, &info, 1000);
+      n = pkt_serialize(&adv, raw, sizeof(raw)); mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      info.name = "ON0ABC"; mc_advert_build(&adv, &r2, &info, 1001);
+      n = pkt_serialize(&adv, raw, sizeof(raw)); mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.n_affinity_hash == 2, "learned two affinity repeaters (redundancy)");
+      mc_packet_t p; build_public_text(&cfg, "ON4XYZ-2: hi", &p);
+      p.path_len = 0x01; p.path[0] = r2.pub[0];   /* arrived via the SECOND repeater */
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      int g = grp_slot(&m);
+      CHECK(g >= 0 && m.txq[g].power_dbm == -5, "downlink via a second affinity repeater"); }
+
+    /* 6. ping/pong works in hotspot role (any sender) */
+    { mc_config_t hc; config_defaults(&hc);
+      config_set(&hc, "role", "hotspot");
+      config_set(&hc, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+      hc.ping_pong = true;
+      config_to_sx126x(&hc, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &hc);
+      mc_packet_t p; build_public_text(&hc, "ON4ABC-9: ping", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.stats.pong_sent == 1, "ping/pong works in hotspot role"); }
 }
 
 static void test_crypto(void)

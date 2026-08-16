@@ -393,9 +393,7 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         const char *body = grp_message_body(plain, plen);
         if (body && is_ping(body)) {
             m->stats.ping_seen++;
-            /* a personal hotspot only answers its own devices' pings */
-            if (m->cfg->role != ROLE_HOTSPOT || config_is_home(m->cfg, sender))
-                send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);
+            send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);   /* answer in both roles */
         }
     }
     return true;

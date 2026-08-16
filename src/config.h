@@ -18,7 +18,7 @@
 #define MC_MAX_PUBLIC_CHANNELS 8
 #define MC_MAX_BLACKLIST       32
 #define MC_BLACKLIST_NAME_LEN  32
-#define MC_MAX_AFFINITY        8
+#define MC_MAX_AFFINITY        16   /* several repeaters in range (redundancy / mesh) */
 #define MC_MAX_HOME            8
 #define MC_NAME_PAT_LEN        32   /* >= aname[32]/MC_BLACKLIST_NAME_LEN so exact patterns match */
 
