@@ -94,10 +94,8 @@ int aprsis_valid_callsign(const char *name, char *out, size_t outsz)
     if (!alpha)
         return 0;
 
-    if (out && outsz) {
-        strncpy(out, up, outsz - 1);
-        out[outsz - 1] = '\0';
-    }
+    if (out && outsz)
+        snprintf(out, outsz, "%s", up);
     return 1;
 }
 

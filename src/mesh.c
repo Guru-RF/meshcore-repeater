@@ -378,7 +378,7 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
 
     char sender[MC_BLACKLIST_NAME_LEN];
     grp_sender_name(plain, sender, sizeof(sender));
-    if (sender_out && sender_sz) { strncpy(sender_out, sender, sender_sz - 1); sender_out[sender_sz - 1] = '\0'; }
+    if (sender_out && sender_sz) snprintf(sender_out, sender_sz, "%s", sender);
     if (config_is_blacklisted(m->cfg, sender)) {
         m->stats.blacklisted++;
         if (m->cfg->verbose)
