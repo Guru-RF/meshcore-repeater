@@ -18,6 +18,14 @@
 #define MC_MAX_PUBLIC_CHANNELS 8
 #define MC_MAX_BLACKLIST       32
 #define MC_BLACKLIST_NAME_LEN  32
+#define MC_MAX_AFFINITY        8
+#define MC_MAX_HOME            8
+#define MC_NAME_PAT_LEN        32   /* >= aname[32]/MC_BLACKLIST_NAME_LEN so exact patterns match */
+
+/* Operating role: a full licensed wide-area repeater, or a personal low-power
+ * (<=100 mW) hotspot that bridges the operator's own devices to the repeater
+ * network with direction-dependent TX power. */
+typedef enum { ROLE_REPEATER = 0, ROLE_HOTSPOT = 1 } mc_role_t;
 
 /* A public MeshCore channel the operator has declared forwardable. The AES key
  * is PUBLISHED, so relaying its group messages does not obscure meaning. */
@@ -88,7 +96,23 @@ typedef struct {
     double   aprs_altitude;      /* metres, for the /A= field */
     uint32_t aprs_beacon_interval; /* seconds between own beacons (0 = off) */
     uint32_t aprs_node_rate;     /* min seconds between re-gating the same node */
+
+    /* ---- role: repeater vs personal hotspot ---- */
+    mc_role_t role;
+    /* real repeater callsigns this hotspot bridges to (path direction = "from mesh") */
+    char     affinity[MC_MAX_AFFINITY][MC_NAME_PAT_LEN];
+    int      n_affinity;
+    /* own/friend device name patterns (wildcards, e.g. "ON6URE*") the hotspot uplinks */
+    char     home[MC_MAX_HOME][MC_NAME_PAT_LEN];
+    int      n_home;
+    int8_t   hotspot_power_high; /* uplink chip dBm (household->repeater; keep antenna <=100 mW) */
+    int8_t   hotspot_power_low;  /* downlink chip dBm (repeater->household, lowest usable) */
 } mc_config_t;
+
+/* Case-insensitive name match; a trailing '*' in pattern is a prefix wildcard. */
+bool config_name_matches(const char *pattern, const char *name);
+bool config_is_home(const mc_config_t *cfg, const char *name);
+bool config_is_affinity(const mc_config_t *cfg, const char *name);
 
 void config_defaults(mc_config_t *cfg);
 

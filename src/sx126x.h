@@ -58,6 +58,10 @@ int  sx126x_poll_rx(uint8_t *buf, size_t bufsz, size_t *len,
  */
 int  sx126x_transmit(const uint8_t *buf, size_t len, uint32_t timeout_ms);
 
+/* Set the chip TX power (dBm, clamped to -9..+22) for subsequent transmits.
+ * Used for per-packet power in hotspot mode; a no-op cost if unchanged. */
+void sx126x_set_tx_power(int8_t dbm);
+
 /* Channel Activity Detection: 1 = busy, 0 = clear, <0 = error. */
 int  sx126x_channel_busy(void);
 

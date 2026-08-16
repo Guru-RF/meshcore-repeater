@@ -434,6 +434,17 @@ int sx126x_set_modem(const sx126x_cfg_t *cfg)
     return sx126x_start_rx();
 }
 
+void sx126x_set_tx_power(int8_t dbm)
+{
+    if (dbm < -9) dbm = -9;
+    if (dbm > 22) dbm = 22;
+    if (dbm == g_cfg.power_dbm)
+        return;                       /* unchanged - don't disturb continuous RX */
+    g_cfg.power_dbm = dbm;
+    sx_set_standby(STDBY_RC);
+    sx_write_cmd(OP_SET_TX_PARAMS, (uint8_t[]){ (uint8_t)dbm, 0x04 /*160us ramp*/ }, 2);
+}
+
 int sx126x_start_rx(void)
 {
     sx_set_standby(STDBY_RC);

@@ -468,6 +468,70 @@ static void test_aprs(void)
           "compressed iGate beacon position builds (got '%s')", pos);
 }
 
+static int first_used(mc_mesh_t *m) { for (int i = 0; i < MESH_TXQ_SIZE; i++) if (m->txq[i].used) return i; return -1; }
+static int grp_slot(mc_mesh_t *m) { int s = -1; for (int i = 0; i < MESH_TXQ_SIZE; i++) if (m->txq[i].used && pkt_payload_type(&m->txq[i].pkt) == PAYLOAD_TYPE_GRP_TXT) s = i; return s; }
+
+static void test_hotspot(void)
+{
+    printf("[hotspot role: personal scope + power asymmetry]\n");
+    mc_config_t cfg; config_defaults(&cfg);
+    CHECK(config_set(&cfg, "role", "hotspot") == 0 && cfg.role == ROLE_HOTSPOT, "role=hotspot");
+    config_set(&cfg, "affinity", "ON0XYZ");
+    config_set(&cfg, "home", "ON6URE*");
+    config_set(&cfg, "hotspot_power_high", "10");
+    config_set(&cfg, "hotspot_power_low", "-5");
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    CHECK(config_name_matches("ON6URE*", "ON6URE-7") && !config_name_matches("ON6URE*", "ON4ABC"),
+          "wildcard prefix match");
+    CHECK(config_is_home(&cfg, "ON6URE-7") && !config_is_home(&cfg, "ON4ABC-1"), "is_home");
+    CHECK(config_is_affinity(&cfg, "ON0XYZ") && !config_is_affinity(&cfg, "ON6URE-7"), "is_affinity");
+    CHECK(config_set(&cfg, "home", "*") == -2 && config_set(&cfg, "affinity", "*") == -2,
+          "reject bare '*' pattern (would void scoping)");
+    config_set(&cfg, "home", "ON6URE-LONGDEVICENAME12345");   /* 26 chars */
+    CHECK(config_is_home(&cfg, "ON6URE-LONGDEVICENAME12345"),
+          "long exact pattern matches (pattern buffer >= name buffer)");
+
+    mc_identity_t id; mc_identity_generate(&id);
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    uint8_t raw[MC_MAX_TRANS_UNIT]; int n;
+
+    /* 1. home device's public message, heard locally -> uplink at HIGH power */
+    { mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "ON6URE-7: hello", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      int s = first_used(&m);
+      CHECK(m.stats.fwd_flood == 1 && s >= 0 && m.txq[s].power_dbm == 10,
+            "home msg uplinked at high power (%d)", s >= 0 ? m.txq[s].power_dbm : 0); }
+
+    /* 2. non-home local message -> dropped (out of personal scope) */
+    { mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "ON4ABC-1: hi", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.stats.fwd_flood == 0, "non-home local msg dropped"); }
+
+    /* 3. learn affinity from its advert; the advert is downlinked at LOW power */
+    { mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_identity_t aff; mc_identity_generate(&aff);
+      mc_advert_info_t info; memset(&info, 0, sizeof(info));
+      info.type = ADV_TYPE_REPEATER; info.name = "ON0XYZ";
+      mc_packet_t adv; mc_advert_build(&adv, &aff, &info, 1000);
+      n = pkt_serialize(&adv, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.n_affinity_hash == 1 && m.affinity_hash[0] == aff.pub[0], "learned affinity path-hash");
+      int s = first_used(&m);
+      CHECK(s >= 0 && m.txq[s].power_dbm == -5, "affinity advert downlinked at low power");
+
+      /* 4. a message that arrived VIA the affinity repeater -> downlink LOW (any sender) */
+      mc_packet_t p; build_public_text(&cfg, "ON4ABC-1: relayed", &p);
+      p.path_len = 0x01; p.path[0] = aff.pub[0];    /* 1 hop = the affinity repeater */
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      int g = grp_slot(&m);
+      CHECK(g >= 0 && m.txq[g].power_dbm == -5, "msg via affinity repeater downlinked at low power"); }
+}
+
 static void test_crypto(void)
 {
     printf("[crypto: hmac-sha256, channel hash, base64]\n");
@@ -583,6 +647,7 @@ int main(void)
     test_ping_pong();
     test_blacklist();
     test_aprs();
+    test_hotspot();
     test_crypto();
     test_airtime();
     test_config();

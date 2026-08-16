@@ -114,6 +114,12 @@ static void cmd_status(cli_ctx_t *ctx)
            ctx->cfg->verbose ? "on" : "off");
     printf("blacklist : %d entries  ignored %llu   control port %u\n",
            ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
+    if (ctx->cfg->role == ROLE_HOTSPOT)
+        printf("role      : hotspot  affinity %d  home %d  power %d/%d dBm (up/down)\n",
+               ctx->cfg->n_affinity, ctx->cfg->n_home,
+               ctx->cfg->hotspot_power_high, ctx->cfg->hotspot_power_low);
+    else
+        printf("role      : repeater\n");
     printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu\n",
            (unsigned long long)s->tx_total, (unsigned long long)s->tx_cad_busy,
            (unsigned long long)s->tx_queue_full, (unsigned long long)s->adverts_sent);
@@ -257,6 +263,7 @@ void cli_handle_line(cli_ctx_t *ctx, const char *line)
         fflush(stdout);
     } else if (!strcasecmp(cmd, "reload")) {
         config_load(ctx->cfg, ctx->config_path);
+        ctx->mesh->n_affinity_hash = 0;   /* re-learn from adverts under the new affinity list */
         apply_radio(ctx);
         printf("reloaded %s (hardware/sync/tcxo changes require restart)\n", ctx->config_path);
         fflush(stdout);

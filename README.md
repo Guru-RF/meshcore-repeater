@@ -450,6 +450,40 @@ APRS-IS host is resolved once at startup so DNS never stalls the radio.
 
 ---
 
+## Roles: repeater vs personal hotspot
+
+`role = repeater` (default) is a full licensed wide-area repeater. `role = hotspot`
+turns it into a **personal low-power bridge** for a licensed operator — a MeshCore
+hotspot in the BIPT personal-use sense (**≤ 100 mW**, same ham band, same strict
+content policy), with **direction-dependent TX power**:
+
+- Traffic heard **locally from your own devices** (`home = ON6URE*`, plus
+  friends/neighbours) is relayed **up** to the repeater network at **full** power
+  (≤ 100 mW). Anything else heard locally is ignored — it only bridges *your* devices.
+- Traffic that arrived **via a real repeater** (`affinity = ON0XYZ`) is relayed
+  back **down** to the household at the **lowest** power.
+
+Direction is read straight from the packet's path: a message carrying an affinity
+repeater's 1-byte path-hash came from the mesh (downlink → low power), otherwise it
+was heard locally (uplink → full power). Affinity repeaters are learned from their
+signed adverts. Adverts are classified by advertiser instead (a repeater's advert
+goes down to the household; your device's advert goes up to the mesh).
+
+```
+role               = hotspot
+affinity           = ON0XYZ        # the real repeater(s) you bridge to (repeatable)
+home               = ON6URE*       # your devices (wildcard, repeatable)
+home               = ON4ABC*       # a friend's / neighbour's devices
+hotspot_power_high = 8             # chip dBm — calibrate so the antenna is <= 100 mW
+hotspot_power_low  = -9            # lowest usable for local delivery
+```
+
+> Both roles need an amateur licence and keep the strict content policy (it's the
+> ham band — no private/encrypted). The power values are **chip** dBm; calibrate
+> against a meter so the antenna stays under 100 mW (the PA adds gain on top).
+
+---
+
 ## Frequency / legal notes
 
 - The defaults follow the

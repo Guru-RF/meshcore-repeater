@@ -71,6 +71,7 @@ typedef struct {
     mc_packet_t pkt;
     uint64_t    due_ms;       /* monotonic ms when eligible to TX */
     uint8_t     priority;     /* lower = sent first */
+    int8_t      power_dbm;    /* chip TX power for this packet (hotspot power asymmetry) */
 } mesh_tx_entry_t;
 
 typedef struct {
@@ -87,6 +88,11 @@ typedef struct {
     uint64_t     start_ms;
 
     struct mc_aprsis *aprs;   /* APRS-IS iGate (NULL = feature disabled) */
+
+    /* hotspot role: path-hashes (pub[0]) of affinity repeaters, learned from
+     * their adverts, used to tell "from the mesh" (downlink) from "local" (uplink) */
+    uint8_t affinity_hash[MC_MAX_AFFINITY];
+    int     n_affinity_hash;
 } mc_mesh_t;
 
 void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg);

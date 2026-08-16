@@ -64,7 +64,8 @@ static void neighbor_update(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE],
     mc_advert_extract(pkt, &n->type, n->name, sizeof(n->name));
 }
 
-static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority, uint32_t delay_ms)
+static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority,
+                    uint32_t delay_ms, int8_t power_dbm)
 {
     uint64_t now = hal_millis();
     for (int i = 0; i < MESH_TXQ_SIZE; i++) {
@@ -73,11 +74,81 @@ static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority, uint
             m->txq[i].pkt = *pkt;
             m->txq[i].priority = priority;
             m->txq[i].due_ms = now + delay_ms;
+            m->txq[i].power_dbm = power_dbm;
             return;
         }
     }
     m->stats.tx_queue_full++;
     log_warn("mesh: TX queue full, dropping packet (type=%u)", pkt_payload_type(pkt));
+}
+
+/* Chip power for packets this node ORIGINATES (adverts, pongs). In hotspot
+ * mode use the "high" level so they reach the repeater network. */
+static int8_t own_tx_power(const mc_mesh_t *m)
+{
+    return (m->cfg->role == ROLE_HOTSPOT) ? m->cfg->hotspot_power_high : m->cfg->tx_power;
+}
+
+/* Does the packet's path contain an affinity repeater's hash (came via the
+ * mesh)? Used to pick downlink (low) vs uplink (high) power in hotspot mode. */
+static bool path_has_affinity(const mc_mesh_t *m, const mc_packet_t *pkt)
+{
+    uint8_t n  = pkt_path_hash_count(pkt);
+    uint8_t hs = pkt_path_hash_size(pkt);
+    for (uint8_t h = 0; h < n; h++) {
+        uint8_t b = pkt->path[h * hs];        /* 1-byte path hash = pub[0] */
+        for (int i = 0; i < m->n_affinity_hash; i++)
+            if (m->affinity_hash[i] == b)
+                return true;
+    }
+    return false;
+}
+
+/* Learn an affinity repeater's path-hash (pub[0]) from its verified advert. */
+static void learn_affinity(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE])
+{
+    for (int i = 0; i < m->n_affinity_hash; i++)
+        if (m->affinity_hash[i] == pub[0])
+            return;
+    if (m->n_affinity_hash < MC_MAX_AFFINITY)
+        m->affinity_hash[m->n_affinity_hash++] = pub[0];
+    else
+        log_warn("mesh: affinity hash table full (%d) - downlink from further "
+                 "repeaters may be misclassified; narrow the affinity list", MC_MAX_AFFINITY);
+}
+
+/*
+ * Hotspot-role forwarding decision. A forwardable packet (per the ham content
+ * policy) is further scoped to the operator's personal bridge, and its TX power
+ * is set by direction: household->repeater (uplink) = high (<=100 mW),
+ * repeater->household (downlink) = low. Returns true to forward.
+ *   - Adverts are classified by advertiser: an affinity repeater -> downlink;
+ *     a home device (ON6URE*, friends) -> uplink; anyone else -> drop.
+ *   - Group messages are classified by path: an affinity repeater in the path
+ *     means it came from the mesh (downlink, forward all); otherwise it was
+ *     heard locally (uplink) and is only bridged if its sender is a home device.
+ */
+static bool hotspot_decide(mc_mesh_t *m, const mc_packet_t *pkt,
+                           const char *aname, const char *grp_sender, int8_t *power)
+{
+    uint8_t pt = pkt_payload_type(pkt);
+    if (pt == PAYLOAD_TYPE_ADVERT) {
+        if (config_is_affinity(m->cfg, aname)) { *power = m->cfg->hotspot_power_low;  return true; }
+        if (config_is_home(m->cfg, aname))     { *power = m->cfg->hotspot_power_high; return true; }
+        *power = m->cfg->hotspot_power_low;
+        return false;                                  /* not our repeater or device */
+    }
+    if (path_has_affinity(m, pkt)) {                   /* came via a repeater -> downlink */
+        *power = m->cfg->hotspot_power_low;
+        return true;
+    }
+    *power = m->cfg->hotspot_power_high;                /* heard locally -> uplink */
+    if (pt == PAYLOAD_TYPE_GRP_TXT)
+        return config_is_home(m->cfg, grp_sender);     /* only our devices (by sender) */
+    /* GRP_DATA has no readable sender to scope by, so we can't confirm it is one
+     * of ours -> don't uplink it (it still downlinks fine when it arrives via a
+     * repeater). Everything else was already dropped by the content policy. */
+    return false;
 }
 
 /* ---- strict ham content policy: forward public, drop private ---- */
@@ -270,7 +341,7 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50);       /* small jitter */
+    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));  /* small jitter */
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
@@ -290,8 +361,10 @@ static void grp_sender_name(const uint8_t *plain, char *out, size_t outsz)
 /* Verbose display, blacklist check and ping/pong for an allowed public group
  * message. Returns false if the sender is blacklisted (drop, do not forward). */
 static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
-                               const mc_pub_channel_t *ch)
+                               const mc_pub_channel_t *ch,
+                               char *sender_out, size_t sender_sz)
 {
+    if (sender_out && sender_sz) sender_out[0] = '\0';
     if (pkt_payload_type(pkt) != PAYLOAD_TYPE_GRP_TXT) {
         if (m->cfg->verbose)
             log_info("[public %s] <data, %u bytes>", ch->name[0] ? ch->name : "-",
@@ -305,6 +378,7 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
 
     char sender[MC_BLACKLIST_NAME_LEN];
     grp_sender_name(plain, sender, sizeof(sender));
+    if (sender_out && sender_sz) { strncpy(sender_out, sender, sender_sz - 1); sender_out[sender_sz - 1] = '\0'; }
     if (config_is_blacklisted(m->cfg, sender)) {
         m->stats.blacklisted++;
         if (m->cfg->verbose)
@@ -319,7 +393,9 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         const char *body = grp_message_body(plain, plen);
         if (body && is_ping(body)) {
             m->stats.ping_seen++;
-            send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);
+            /* a personal hotspot only answers its own devices' pings */
+            if (m->cfg->role != ROLE_HOTSPOT || config_is_home(m->cfg, sender))
+                send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);
         }
     }
     return true;
@@ -346,6 +422,8 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     }
 
     uint8_t pt = pkt_payload_type(&pkt);
+    uint8_t atype = 0; char aname[32] = "";                 /* advert name/type (hotspot) */
+    char grp_sender[MC_BLACKLIST_NAME_LEN] = "";            /* decrypted public sender (hotspot) */
 
     if (pt == PAYLOAD_TYPE_ADVERT) {
         uint8_t pub[MC_PUB_KEY_SIZE];
@@ -354,7 +432,6 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             log_debug("mesh: dropped advert with bad signature");
             return; /* forged - do not propagate */
         }
-        uint8_t atype = 0; char aname[32];
         mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
         if (config_is_blacklisted(m->cfg, aname)) {
             m->stats.blacklisted++;
@@ -364,6 +441,8 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         }
         m->stats.rx_advert++;
         neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
+        if (m->cfg->role == ROLE_HOTSPOT && config_is_affinity(m->cfg, aname))
+            learn_affinity(m, pub);   /* remember its path-hash for downlink detection */
 
         double lat, lon;
         bool has_loc = mc_advert_extract_location(&pkt, &lat, &lon);
@@ -398,7 +477,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     const mc_pub_channel_t *pub_ch = NULL;
     fwd_decision_t decision = classify_forward(m, &pkt, &pub_ch);
     if (decision == FWD_OK_GRP_PUBLIC) {
-        if (!process_public_grp(m, &pkt, pub_ch))   /* verbose + blacklist + ping/pong */
+        if (!process_public_grp(m, &pkt, pub_ch, grp_sender, sizeof(grp_sender)))
             return;                                 /* blacklisted sender -> don't forward */
         m->stats.fwd_grp_public++;
     } else if (decision != FWD_OK_PUBLIC) {   /* a drop */
@@ -414,6 +493,16 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         return;
     }
 
+    /* hotspot role: scope to the personal bridge + pick direction-dependent power */
+    int8_t tx_power = m->cfg->tx_power;
+    if (m->cfg->role == ROLE_HOTSPOT) {
+        if (!hotspot_decide(m, &pkt, aname, grp_sender, &tx_power)) {
+            if (m->cfg->verbose)
+                log_info("[hotspot] not forwarding type=0x%02X (out of personal scope)", pt);
+            return;
+        }
+    }
+
     if (pkt_is_route_flood(&pkt)) {
         uint8_t n  = pkt_path_hash_count(&pkt);
         uint8_t hs = pkt_path_hash_size(&pkt);
@@ -427,7 +516,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             uint32_t t = (airtime * 52 / 50) / 2;
             uint32_t delay = hal_rng_int(0, 5) * t;
 
-            enqueue(m, &pkt, (uint8_t)(n + 1), delay); /* closer sources = higher priority */
+            enqueue(m, &pkt, (uint8_t)(n + 1), delay, tx_power); /* closer sources = higher priority */
             m->stats.fwd_flood++;
         } else {
             m->stats.fwd_dropped++;
@@ -439,7 +528,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             /* we are the next hop: strip ourselves from the front of the path */
             memmove(pkt.path, pkt.path + hs, (size_t)(n - 1) * hs);
             pkt_set_path_hash_count(&pkt, (uint8_t)(n - 1));
-            enqueue(m, &pkt, 0, 0); /* routed traffic is highest priority, no delay */
+            enqueue(m, &pkt, 0, 0, tx_power); /* routed traffic is highest priority, no delay */
             m->stats.fwd_direct++;
         }
         /* not addressed to us -> ignore */
@@ -481,15 +570,16 @@ void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
     uint8_t raw[MC_MAX_TRANS_UNIT];
     int n = pkt_serialize(&e->pkt, raw, sizeof(raw));
     if (n > 0) {
+        sx126x_set_tx_power(e->power_dbm);        /* per-packet power (hotspot asymmetry) */
         uint32_t airtime = sx126x_airtime_ms((size_t)n);
         int rc = sx126x_transmit(raw, (size_t)n, airtime + 1000);
         if (rc == 0) {
             m->stats.tx_total++;
             if (m->cfg->verbose)
-                log_info("[tx] %s %s %dB %uhop airtime %ums",
+                log_info("[tx] %s %s %dB %uhop %ddBm airtime %ums",
                          payload_type_name(pkt_payload_type(&e->pkt)),
                          pkt_is_route_flood(&e->pkt) ? "flood" : "direct",
-                         n, pkt_path_hash_count(&e->pkt), airtime);
+                         n, pkt_path_hash_count(&e->pkt), e->power_dbm, airtime);
         } else {
             log_warn("mesh: TX failed (rc=%d, len=%d)", rc, n);
         }
@@ -518,7 +608,7 @@ int mesh_send_advert(mc_mesh_t *m)
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
 
-    enqueue(m, &pkt, 0, hal_rng_int(0, 3) * 50); /* small jitter */
+    enqueue(m, &pkt, 0, hal_rng_int(0, 3) * 50, own_tx_power(m)); /* small jitter */
     m->stats.adverts_sent++;
     log_info("mesh: queued self-advert '%s'", m->cfg->name);
     return 0;

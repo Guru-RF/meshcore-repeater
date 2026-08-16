@@ -70,6 +70,56 @@ void config_defaults(mc_config_t *cfg)
     cfg->aprs_altitude       = 0.0;
     cfg->aprs_beacon_interval = 1800;  /* 30 min */
     cfg->aprs_node_rate      = 900;    /* 15 min per node */
+
+    /* role: full repeater by default. Hotspot power defaults are deliberately
+     * LOW (safe under 100 mW on any PA) - calibrate up against a meter. */
+    cfg->role               = ROLE_REPEATER;
+    cfg->n_affinity         = 0;
+    cfg->n_home             = 0;
+    cfg->hotspot_power_high = 8;       /* chip dBm; tune so antenna <= 100 mW */
+    cfg->hotspot_power_low  = -9;      /* chip minimum */
+}
+
+static void trim_name(const char *in, char *out, size_t outsz);  /* fwd decl */
+
+/* ---- name matching (role lists) ---- */
+bool config_name_matches(const char *pattern, const char *name)
+{
+    size_t pl = strlen(pattern);
+    if (pl > 0 && pattern[pl - 1] == '*')
+        return strncasecmp(pattern, name, pl - 1) == 0;   /* prefix wildcard */
+    return strcasecmp(pattern, name) == 0;
+}
+
+bool config_is_home(const mc_config_t *cfg, const char *name)
+{
+    if (!name || !name[0]) return false;
+    for (int i = 0; i < cfg->n_home; i++)
+        if (config_name_matches(cfg->home[i], name)) return true;
+    return false;
+}
+
+bool config_is_affinity(const mc_config_t *cfg, const char *name)
+{
+    if (!name || !name[0]) return false;
+    for (int i = 0; i < cfg->n_affinity; i++)
+        if (config_name_matches(cfg->affinity[i], name)) return true;
+    return false;
+}
+
+/* Append a pattern to a fixed name-list (dedup, bounded). 0 ok/dup, -2 full. */
+static int list_add(char list[][MC_NAME_PAT_LEN], int *n, int max, const char *val)
+{
+    char clean[MC_NAME_PAT_LEN];
+    trim_name(val, clean, sizeof(clean));
+    if (clean[0] == '\0') return -2;
+    if (!strcmp(clean, "*")) return -2;    /* a bare '*' would match everyone - reject */
+    for (int i = 0; i < *n; i++)
+        if (!strcasecmp(list[i], clean)) return 0;
+    if (*n >= max) return -2;
+    snprintf(list[*n], MC_NAME_PAT_LEN, "%s", clean);
+    (*n)++;
+    return 0;
 }
 
 /* ---- blacklist helpers ---- */
@@ -313,6 +363,23 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "aprs_beacon_interval")) { if (!parse_u32(val, &u)) return -2; cfg->aprs_beacon_interval = u; return 0; }
     if (!strcasecmp(key, "aprs_node_rate")) { if (!parse_u32(val, &u)) return -2; cfg->aprs_node_rate = u; return 0; }
 
+    /* ---- role: repeater vs hotspot ---- */
+    if (!strcasecmp(key, "role")) {
+        if (!strcasecmp(val, "repeater")) cfg->role = ROLE_REPEATER;
+        else if (!strcasecmp(val, "hotspot")) cfg->role = ROLE_HOTSPOT;
+        else return -2;
+        return 0;
+    }
+    if (!strcasecmp(key, "affinity")) return list_add(cfg->affinity, &cfg->n_affinity, MC_MAX_AFFINITY, val);
+    if (!strcasecmp(key, "home"))     return list_add(cfg->home, &cfg->n_home, MC_MAX_HOME, val);
+    if (!strcasecmp(key, "hotspot_power_high") || !strcasecmp(key, "hotspot_power_low")) {
+        char *end = NULL; long p = strtol(val, &end, 10);
+        if (end == val || *end != '\0' || p < -9 || p > 22) return -2;
+        if (!strcasecmp(key, "hotspot_power_high")) cfg->hotspot_power_high = (int8_t)p;
+        else cfg->hotspot_power_low = (int8_t)p;
+        return 0;
+    }
+
     return -1; /* unknown key */
 }
 
@@ -366,6 +433,11 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "aprs_altitude"))    { snprintf(out, outsz, "%g", cfg->aprs_altitude); return 0; }
     if (!strcasecmp(key, "aprs_beacon_interval")) { snprintf(out, outsz, "%u", cfg->aprs_beacon_interval); return 0; }
     if (!strcasecmp(key, "aprs_node_rate"))   { snprintf(out, outsz, "%u", cfg->aprs_node_rate); return 0; }
+    if (!strcasecmp(key, "role"))             { snprintf(out, outsz, "%s", cfg->role == ROLE_HOTSPOT ? "hotspot" : "repeater"); return 0; }
+    if (!strcasecmp(key, "affinity"))         { snprintf(out, outsz, "%d entries", cfg->n_affinity); return 0; }
+    if (!strcasecmp(key, "home"))             { snprintf(out, outsz, "%d entries", cfg->n_home); return 0; }
+    if (!strcasecmp(key, "hotspot_power_high")){ snprintf(out, outsz, "%d", cfg->hotspot_power_high); return 0; }
+    if (!strcasecmp(key, "hotspot_power_low")) { snprintf(out, outsz, "%d", cfg->hotspot_power_low); return 0; }
     return -1;
 }
 
@@ -375,10 +447,12 @@ int config_load(mc_config_t *cfg, const char *path)
     if (!f)
         return -1;
 
-    /* public_channel and blacklist are lists, not scalars: the file is
-     * authoritative, so clear them before (re)reading rather than accumulating. */
+    /* list-valued keys: the file is authoritative, so clear them before
+     * (re)reading rather than accumulating across reloads. */
     cfg->n_public_channels = 0;
     cfg->n_blacklist = 0;
+    cfg->n_affinity = 0;
+    cfg->n_home = 0;
 
     char line[1024];
     int lineno = 0;
@@ -439,7 +513,8 @@ int config_save(const mc_config_t *cfg, const char *path)
         "longitude", "advert_interval", "forward", "ping_pong", "control_port",
         "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
-        "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate", NULL
+        "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",
+        "role", "hotspot_power_high", "hotspot_power_low", NULL
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {
@@ -460,6 +535,10 @@ int config_save(const mc_config_t *cfg, const char *path)
     /* blacklist entries (also a repeatable list) */
     for (int i = 0; i < cfg->n_blacklist; i++)
         fprintf(f, "%-18s = %s\n", "blacklist", cfg->blacklist[i]);
+    for (int i = 0; i < cfg->n_affinity; i++)
+        fprintf(f, "%-18s = %s\n", "affinity", cfg->affinity[i]);
+    for (int i = 0; i < cfg->n_home; i++)
+        fprintf(f, "%-18s = %s\n", "home", cfg->home[i]);
     fclose(f);
     return 0;
 }
