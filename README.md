@@ -171,13 +171,14 @@ That is the whole install. `install-repeater.sh`:
    them into `meshcore-repeater.conf`.
 6. **Offers to reboot**, which SPI needs before `/dev/spidev0.x` appears.
 
-Run it again any time to upgrade: your config is preserved and the prompts are
-pre-filled with what is already configured, so you can press Enter straight
-through.
+Run it again any time to **upgrade in place**: it notices the repeater is already
+installed and just refreshes the binary from the latest sources — your config,
+callsign and the service's running state are left untouched, and it asks nothing
+(steps 1, 2, 4, 5 and 6 above are all skipped). A running repeater is left alone.
 
-> `wget -qO- … | sudo bash` works too — the script notices it was piped, where
-> stdin is the script rather than you, and re-attaches to your terminal so the
-> prompts still work.
+> On a **first** install, `wget -qO- … | sudo bash` works too — the script notices
+> it was piped, where stdin is the script rather than you, and re-attaches to your
+> terminal so the prompts still work. (An upgrade needs no terminal at all.)
 
 Prefer to do it from a checkout (skips the apt upgrade and the interactive
 prompts — edit the config by hand afterwards)?

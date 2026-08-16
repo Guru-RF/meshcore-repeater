@@ -9,6 +9,10 @@
 # (dedicated 'meshcore' user, self-contained under /opt), asks for your callsign
 # -- which becomes the repeater's on-air ID -- an optional position, and an
 # optional APRS-IS iGate, then offers a reboot.
+#
+# Re-running it on a Pi that already has the repeater installed is a no-fuss
+# UPGRADE: it just refreshes the binary from the latest sources, leaves your
+# config and the service's running state untouched, and asks nothing.
 
 set -eu
 
@@ -28,6 +32,16 @@ SRC_DIR="/usr/local/src/meshcore-repeater"
 BLOCK_BEGIN="# >>> RF.Guru MeshCore repeater -- managed by install-repeater.sh >>>"
 BLOCK_END="# <<< RF.Guru MeshCore repeater <<<"
 
+# Already installed? Then treat this run as an in-place UPGRADE: refresh the
+# sources, rebuild and reinstall (install.sh preserves the existing /opt config),
+# restart if it was running, and SKIP every interactive question. A running
+# repeater is left alone -- only the binary is refreshed; callsign, position,
+# APRS settings and the service's running/stopped state all stay as they are.
+UPGRADE=0
+if [ -f "${CONF}" ] || [ -f "/etc/systemd/system/${APP_NAME}.service" ]; then
+  UPGRADE=1
+fi
+
 # ---------------------------------------------------------------------------
 # `wget -qO- ... | sudo bash` leaves stdin on the pipe, so every prompt below
 # would read the *script* instead of the user. Re-fetch ourselves to a file and
@@ -35,7 +49,7 @@ BLOCK_END="# <<< RF.Guru MeshCore repeater <<<"
 # reads a piped script incrementally, and exec() replaces us before it gets the
 # chance to read another line.
 # ---------------------------------------------------------------------------
-if [ ! -t 0 ] && [ -z "${REPEATER_INSTALL_REEXEC:-}" ]; then
+if [ "$UPGRADE" -eq 0 ] && [ ! -t 0 ] && [ -z "${REPEATER_INSTALL_REEXEC:-}" ]; then
   if [ -e /dev/tty ] && (exec </dev/tty) 2>/dev/null; then
     _self="$(mktemp /tmp/install-repeater.XXXXXX)"
     if command -v wget >/dev/null 2>&1; then
@@ -176,7 +190,16 @@ case "$PI_MODEL" in
 esac
 
 banner
-say "Installing the RF.Guru MeshCore repeater on ${PI_MODEL}"
+if [ "$UPGRADE" -eq 1 ]; then
+  say "Existing install found -- upgrading in place on ${PI_MODEL} (config left unchanged)"
+else
+  say "Installing the RF.Guru MeshCore repeater on ${PI_MODEL}"
+fi
+
+# On an in-place upgrade, skip the system upgrade, the extra deps, gum and the
+# whole config.txt / SPI dance below: it is all already done. Jump straight to
+# refreshing the sources and rebuilding.
+if [ "$UPGRADE" -eq 0 ]; then
 
 # ---------------------------------------------------------------------------
 # 1. Look at config.txt *before* anything touches it, so we can tell whether
@@ -260,6 +283,8 @@ else
   oops "gum could not be installed -- using plain prompts."
 fi
 
+fi  # <<< end fresh-install-only setup (skipped on an upgrade)
+
 # ---------------------------------------------------------------------------
 # 5. Sources: build from this checkout when we are in one, otherwise clone.
 #    A clone lands root-owned under /usr/local/src; hand it to the invoking
@@ -304,6 +329,21 @@ fi
 for g in spi gpio; do
   getent group "$g" >/dev/null 2>&1 || run "groupadd --system $g"
 done
+
+# ---------------------------------------------------------------------------
+# Upgrade path stops here. install.sh has rebuilt and reinstalled the binary,
+# the CLI and the unit, left the existing /opt config untouched, re-enabled the
+# service and restarted it if it was running. No config.txt edits, no prompts,
+# no reboot question -- the running repeater is left exactly as configured.
+# ---------------------------------------------------------------------------
+if [ "$UPGRADE" -eq 1 ]; then
+  say ""
+  say "${APP_NAME} upgraded to the latest build."
+  say "Config, callsign and the service's running state were left unchanged."
+  say ""
+  say "run [>meshcore-cli status] to check it, or [>journalctl -u ${APP_NAME} -f] to watch."
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 7. config.txt: SPI (for /dev/spidev0.x) and the LED GPIOs.
