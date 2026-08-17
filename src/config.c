@@ -446,11 +446,13 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "ping_channel")) {
         char clean[MC_ROOM_NAME_LEN * 2];
         trim_name(val, clean, sizeof(clean));
-        if (clean[0] == '\0' || !strcasecmp(clean, "any") || !strcasecmp(clean, "none") ||
+        if (!strcasecmp(clean, "any") || !strcasecmp(clean, "none") ||
             !strcmp(clean, "-") || !strcmp(clean, "*")) {
             cfg->ping_channel[0] = '\0';                   /* answer on any channel */
             return 0;
         }
+        if (clean[0] == '\0')
+            return -2;   /* empty (e.g. a "#name" that '#'-comment-stripped) -> warn, keep default */
         char nm[MC_ROOM_NAME_LEN * 2 + 2];                 /* normalise to one leading '#' */
         if (clean[0] == '#') snprintf(nm, sizeof(nm), "%s", clean);
         else                 snprintf(nm, sizeof(nm), "#%s", clean);

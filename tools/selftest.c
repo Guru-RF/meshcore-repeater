@@ -414,6 +414,17 @@ static void test_ping_channel(void)
             "config_load ensures the #mesh ping channel (built in)");
       remove(tmp); }
 
+    /* the no-file path of config_load also ensures #mesh */
+    { mc_config_t c; config_defaults(&c);
+      config_load(&c, "/nonexistent/does-not-exist.conf");   /* returns -1 */
+      int has_mesh = 0;
+      for (int i = 0; i < c.n_public_channels; i++)
+          if (strcmp(c.public_channels[i].name, "#mesh") == 0) has_mesh = 1;
+      CHECK(has_mesh, "config_load ensures #mesh even with no config file");
+      /* a '#'-comment-stripped ping_channel value is rejected (keeps the default), not silently 'any' */
+      CHECK(config_set(&c, "ping_channel", "") == -2 && strcmp(c.ping_channel, "#mesh") == 0,
+            "empty ping_channel rejected, default #mesh kept"); }
+
     /* a "ping" ON #mesh is answered (ping_channel defaults to #mesh) */
     { mc_config_t cfg; config_defaults(&cfg);
       config_set(&cfg, "room", "mesh");             /* #mesh becomes public_channels[0] */
@@ -434,6 +445,19 @@ static void test_ping_channel(void)
       n = pkt_serialize(&p, raw, sizeof(raw));
       mesh_on_recv(&m, raw, (size_t)n, -60, 24);
       CHECK(m.stats.ping_seen == 1 && m.stats.pong_sent == 0, "ping off the ping channel -> no pong"); }
+
+    /* ping_channel round-trips through save/load ('#' is a comment in the file) */
+    { mc_config_t a; config_defaults(&a);
+      config_set(&a, "ping_channel", "test-chan");     /* -> "#test-chan" */
+      const char *tmp = "/tmp/mc_pingch_rt.conf";
+      config_save(&a, tmp);
+      mc_config_t b; config_defaults(&b);
+      config_load(&b, tmp);
+      CHECK(strcmp(b.ping_channel, "#test-chan") == 0, "ping_channel survives save->load (bare in file)");
+      config_set(&a, "ping_channel", "any"); config_save(&a, tmp);
+      mc_config_t d; config_defaults(&d); config_load(&d, tmp);
+      CHECK(d.ping_channel[0] == '\0', "ping_channel 'any' round-trips to answer-on-any");
+      remove(tmp); }
 }
 
 static void test_blacklist(void)
