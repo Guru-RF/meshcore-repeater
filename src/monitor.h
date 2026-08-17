@@ -51,7 +51,8 @@ void monitor_public(mc_monitor *mon, const char *chan, const char *text,
                     int rssi, int8_t snr_q);
 void monitor_region(mc_monitor *mon, const char *room, uint8_t ptype,
                     unsigned len, int rssi, int8_t snr_q);
-void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason);
+/* chan_hash is the group channel-hash byte for GRP drops, or -1 (not a group msg). */
+void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason, int chan_hash);
 
 /* Routing predicates (exposed for testing). */
 bool monitor_wants_public(const mc_mon_conn_t *c, const char *chan);

@@ -128,13 +128,16 @@ void monitor_region(mc_monitor *mon, const char *room, uint8_t ptype,
             mon_write(mon, i, line, (size_t)len);
 }
 
-void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason)
+void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason, int chan_hash)
 {
     if (mon->n == 0) return;
     char t[16]; stamp(t, sizeof(t));
     char line[200];
-    int len = snprintf(line, sizeof(line), "%s [drop] type=0x%02X  %s\n",
-                       t, ptype, reason ? reason : "");
+    int len = (chan_hash >= 0)
+        ? snprintf(line, sizeof(line), "%s [drop] type=0x%02X chan=0x%02X  %s\n",
+                   t, ptype, (unsigned)chan_hash, reason ? reason : "")
+        : snprintf(line, sizeof(line), "%s [drop] type=0x%02X  %s\n",
+                   t, ptype, reason ? reason : "");
     if (len < 0) return;
     if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
     for (int i = mon->n - 1; i >= 0; i--)
@@ -147,7 +150,8 @@ int monitor_pollfds(mc_monitor *mon, struct pollfd *pfd, int max)
     int k = 0;
     for (int i = 0; i < mon->n && k < max; i++, k++) {
         pfd[k].fd      = mon->conn[i].fd;
-        pfd[k].events  = 0;                            /* POLLHUP/POLLERR always reported */
+        pfd[k].events  = POLLIN;   /* the client never sends after the command, so
+                                      readable == EOF == it closed (see monitor_reap) */
         pfd[k].revents = 0;
     }
     return k;
@@ -156,9 +160,18 @@ int monitor_pollfds(mc_monitor *mon, struct pollfd *pfd, int max)
 void monitor_reap(mc_monitor *mon, const struct pollfd *pfd, int count)
 {
     /* pfd[0..count-1] were filled from conn[0..count-1] in order this iteration;
-     * reap hung-up ones from the back so compaction never shifts a lower index. */
+     * reap closed clients from the back so compaction never shifts a lower index. */
     if (count > mon->n) count = mon->n;
-    for (int i = count - 1; i >= 0; i--)
-        if (pfd[i].revents & (POLLHUP | POLLERR | POLLNVAL))
-            mon_drop(mon, i);
+    for (int i = count - 1; i >= 0; i--) {
+        short re = pfd[i].revents;
+        if (re & (POLLHUP | POLLERR | POLLNVAL)) { mon_drop(mon, i); continue; }
+        if (re & POLLIN) {
+            /* the streaming client sends nothing, so readability is EOF (it closed)
+             * or, defensively, stray bytes we discard. */
+            char junk[64];
+            ssize_t r = read(mon->conn[i].fd, junk, sizeof(junk));
+            if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                mon_drop(mon, i);
+        }
+    }
 }

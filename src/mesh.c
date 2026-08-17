@@ -550,8 +550,11 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         }
         if (m->cfg->verbose)
             log_info("[ignored] type=0x%02X dropped: %s", pt, decision_reason(decision));
-        if (m->mon)
-            monitor_drop(m->mon, pt, decision_reason(decision));
+        if (m->mon) {
+            int chash = ((pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) &&
+                         pkt.payload_len >= 1) ? pkt.payload[0] : -1;
+            monitor_drop(m->mon, pt, decision_reason(decision), chash);
+        }
         return;
     }
 

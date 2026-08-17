@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <poll.h>
+#include <sys/socket.h>
 
 static int g_fail = 0;
 #define CHECK(cond, ...) do { \
@@ -837,6 +839,21 @@ static void test_monitor(void)
                 "monitor_region streams region metadata");
           for (int i = 0; i < m2.n; i++) close(m2.conn[i].fd);
           close(q[0]); close(q[1]);
+      }
+    }
+
+    /* reap: a monitor whose client has gone is dropped on the next poll (this is
+     * the bug that leaked zombie monitors until the table filled) */
+    { mc_monitor m3; monitor_init(&m3);
+      int sp[2];
+      if (socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0) {
+          monitor_add(&m3, sp[0], "monitor all");      /* sp[0] = daemon side */
+          CHECK(monitor_count(&m3) == 1, "reap: monitor registered");
+          close(sp[1]);                                 /* client goes away */
+          struct pollfd pf; int k = monitor_pollfds(&m3, &pf, 1);
+          poll(&pf, k, 200);
+          monitor_reap(&m3, &pf, k);
+          CHECK(monitor_count(&m3) == 0, "reap: a closed client is dropped (no zombie leak)");
       }
     }
 }

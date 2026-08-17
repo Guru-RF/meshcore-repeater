@@ -83,8 +83,17 @@ static char **mc_completer(const char *text, int start, int end)
 }
 #endif /* HAVE_READLINE */
 
+/* A streaming command (monitor) keeps the connection open and pushes events; the
+ * client must NOT half-close its write side, so the daemon detects the client
+ * leaving via EOF on read rather than mistaking the half-close for a departure. */
+static int is_stream_cmd(const char *s)
+{
+    return strncmp(s, "monitor", 7) == 0 && (s[7] == '\0' || s[7] == ' ' || s[7] == '\t');
+}
+
 static int send_command(int port, const char *cmd)
 {
+    int stream = is_stream_cmd(cmd);
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return 1; }
 
@@ -103,12 +112,16 @@ static int send_command(int port, const char *cmd)
     char out[600];
     int len = snprintf(out, sizeof(out), "%s\n", cmd);
     if (write(fd, out, (size_t)len) < 0) { perror("write"); close(fd); return 1; }
-    shutdown(fd, SHUT_WR);
+    if (!stream)
+        shutdown(fd, SHUT_WR);   /* one-shot: signal done. monitor: keep write open. */
 
     char buf[1024];
     ssize_t r;
-    while ((r = read(fd, buf, sizeof(buf))) > 0)
+    while ((r = read(fd, buf, sizeof(buf))) > 0) {
         fwrite(buf, 1, (size_t)r, stdout);
+        fflush(stdout);       /* stream live (monitor) even when piped; a no-op-ish
+                                 extra flush for one-shot replies */
+    }
     close(fd);
     return 0;
 }
