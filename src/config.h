@@ -36,6 +36,7 @@ typedef struct {
     uint8_t  secret[32];      /* channel PSK, zero-padded (16-byte keys use [0..15]) */
     uint8_t  secret_len;      /* 16 (AES-128) or 32 */
     uint8_t  hash;            /* SHA256(secret, secret_len)[0] = on-air channel selector */
+    bool     derived;         /* auto-derived from a #room name; not written back to file */
 } mc_pub_channel_t;
 
 typedef struct {

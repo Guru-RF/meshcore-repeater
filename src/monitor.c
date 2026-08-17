@@ -84,8 +84,12 @@ bool monitor_wants_public(const mc_mon_conn_t *c, const char *chan)
     switch (c->kind) {
     case MON_ALL:     return true;
     case MON_PUBLIC:  return true;
-    case MON_CHANNEL: return chan && *chan && strcasecmp(c->target, chan) == 0;
-    default:          return false;    /* MON_ROOM */
+    /* MON_ROOM "#name" also matches the derived channel of the same name, so
+     * `monitor #sysop` shows the decrypted #sysop channel text (a MeshCore hashtag
+     * channel), not only its transport-region hits. */
+    case MON_CHANNEL:
+    case MON_ROOM:    return chan && *chan && strcasecmp(c->target, chan) == 0;
+    default:          return false;
     }
 }
 

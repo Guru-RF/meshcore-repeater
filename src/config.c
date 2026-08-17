@@ -242,13 +242,47 @@ static bool parse_double(const char *v, double *out)
     return true;
 }
 
-/* Parse a "public_channel = [name:]<base64-or-hex-psk>" value and append it to
- * the list. Returns 0 (added or a harmless duplicate), or -2 on a bad value. */
-static int add_public_channel(mc_config_t *cfg, const char *val)
+/* Register a channel from raw key bytes. derived=true marks a key auto-derived
+ * from a #room name (config_save skips it - the room line re-derives it on load).
+ * Returns 0 (added or a harmless duplicate), or -2 on a bad length / full list. */
+static int register_channel(mc_config_t *cfg, const char *name,
+                            const uint8_t *secret, int len, bool derived)
 {
+    if (len != 16 && len != 32)
+        return -2;
+    /* dedup by secret so a reload (which re-reads the same file) is idempotent */
+    for (int i = 0; i < cfg->n_public_channels; i++) {
+        if (cfg->public_channels[i].secret_len == (uint8_t)len &&
+            memcmp(cfg->public_channels[i].secret, secret, (size_t)len) == 0)
+            return 0;
+    }
     if (cfg->n_public_channels >= MC_MAX_PUBLIC_CHANNELS)
         return -2;
 
+    mc_pub_channel_t *ch = &cfg->public_channels[cfg->n_public_channels];
+    memset(ch, 0, sizeof(*ch));
+    memcpy(ch->secret, secret, (size_t)len);   /* bytes [len..31] stay zero */
+    ch->secret_len = (uint8_t)len;
+    ch->derived    = derived;
+    snprintf(ch->name, sizeof(ch->name), "%s", name ? name : "");
+
+    /* channel hash = SHA256(secret, len)[0]; hash EXACTLY the raw key bytes
+     * (a 16-byte PSK must not be zero-padded to 32 before hashing). */
+    SHA256_CTX c;
+    uint8_t digest[SHA256_BLOCK_SIZE];
+    sha256_init(&c);
+    sha256_update(&c, ch->secret, (size_t)len);
+    sha256_final(&c, digest);
+    ch->hash = digest[0];
+
+    cfg->n_public_channels++;
+    return 0;
+}
+
+/* Parse a "public_channel = [name:]<base64-or-hex-psk>" value and append it.
+ * Returns 0 (added or a harmless duplicate), or -2 on a bad value. */
+static int add_public_channel(mc_config_t *cfg, const char *val)
+{
     /* optional friendly name before the FIRST ':' */
     char name[24] = {0};
     const char *psk = val;
@@ -271,33 +305,7 @@ static int add_public_channel(mc_config_t *cfg, const char *val)
     uint8_t secret[32];
     int len = ishex ? hex2bin(psk, secret, sizeof(secret))
                     : base64_decode(psk, secret, sizeof(secret));
-    if (len != 16 && len != 32)
-        return -2;
-
-    /* dedup by secret so a reload (which re-reads the same file) is idempotent */
-    for (int i = 0; i < cfg->n_public_channels; i++) {
-        if (cfg->public_channels[i].secret_len == (uint8_t)len &&
-            memcmp(cfg->public_channels[i].secret, secret, (size_t)len) == 0)
-            return 0;
-    }
-
-    mc_pub_channel_t *ch = &cfg->public_channels[cfg->n_public_channels];
-    memset(ch, 0, sizeof(*ch));
-    memcpy(ch->secret, secret, (size_t)len);   /* bytes [len..31] stay zero */
-    ch->secret_len = (uint8_t)len;
-    snprintf(ch->name, sizeof(ch->name), "%s", name);
-
-    /* channel hash = SHA256(secret, len)[0]; hash EXACTLY the raw key bytes
-     * (a 16-byte PSK must not be zero-padded to 32 before hashing). */
-    SHA256_CTX c;
-    uint8_t digest[SHA256_BLOCK_SIZE];
-    sha256_init(&c);
-    sha256_update(&c, ch->secret, (size_t)len);
-    sha256_final(&c, digest);
-    ch->hash = digest[0];
-
-    cfg->n_public_channels++;
-    return 0;
+    return register_channel(cfg, name, secret, len, false);
 }
 
 /* Parse a "room = [#]<name>" transport region and append it. The key is
@@ -338,6 +346,11 @@ static int add_room(mc_config_t *cfg, const char *val)
     sha256_final(&c, digest);
     memcpy(cfg->room_key[cfg->n_rooms], digest, 16);   /* region key = SHA256(name)[0..15] */
     cfg->n_rooms++;
+
+    /* A MeshCore hashtag channel uses the SAME key = SHA256("#name")[0..15]. Also
+     * register it as a (derived) public channel so we decrypt, forward and monitor
+     * its plain-flood group messages - not just match a transport code. */
+    register_channel(cfg, name, digest, 16, true);
     return 0;
 }
 
@@ -615,6 +628,8 @@ int config_save(const mc_config_t *cfg, const char *path)
      * base64 encoder is needed - it round-trips through hex2bin on load). */
     for (int i = 0; i < cfg->n_public_channels; i++) {
         const mc_pub_channel_t *ch = &cfg->public_channels[i];
+        if (ch->derived)
+            continue;                  /* re-derived from its 'room' line on load */
         char hex[65];
         bin2hex(ch->secret, ch->secret_len, hex, sizeof(hex));
         if (ch->name[0])

@@ -341,40 +341,38 @@ CLI lists what's configured; `status` shows the `policy:` counters
 > proves a message belongs to a configured channel, but it cannot judge whether
 > *you* were entitled to call that key public.
 
-### Hashtag rooms (transport regions)
+### Hashtag rooms / channels
 
-MeshCore has a second, **additive** way to scope forwarding: transport **regions**
-(a.k.a. hashtag rooms / flood-scopes), named `#something`. A region's key is
-**auto-derived** from its name — `SHA256("#name")` — so you configure a room by
-**name only**, never a key:
+A MeshCore **hashtag channel** (a.k.a. hashtag room) named `#something` has a key
+that is **auto-derived from the name** — `SHA256("#name")[:16]` — so you configure
+one by **name only**, never a key:
 
 ```
-room = belgium          # BARE name in the config file — '#' starts a comment
-room = meshcore         # here, so the daemon adds it and hashes SHA256("#name")
+room = sysop            # BARE name in the config file — '#' starts a comment
+room = ora              # here, so the daemon adds the '#' and derives the key
 ```
 
 (In the config **file** the value must be the bare name; `#` can't appear because
-it starts a comment. Via `meshcore-cli`, `set room belgium` and `set room #belgium`
+it starts a comment. Via `meshcore-cli`, `set room sysop` and `set room #sysop`
 both work.)
 
-When a group message arrives as a **`TRANSPORT_FLOOD`** whose `transport_codes[0]`
-matches `HMAC-SHA256(SHA256("#name")[:16], payload_type‖payload)[:2]` for one of
-your rooms, the repeater **relays it even without holding that channel's key** —
-by listing the region you've declared it public. This never relaxes the rules
-above: DMs stay dropped, and group traffic that matches neither a configured
-`public_channel` **nor** a served `#room` is still dropped.
+That one derived key is used **two ways**, so `room = sysop` covers both shapes a
+network might send:
 
-Two things to know:
+- **As a channel key** (the common case): the repeater holds the key, so it
+  **decrypts, forwards, and lets you `monitor`** the channel's plain-flood group
+  messages — `meshcore-cli monitor #sysop` shows the text. It appears in
+  `channels` as a derived channel and counts under the `policy: grp-public` stats.
+- **As a transport region**: for networks using MeshCore **Transport**, a
+  `TRANSPORT_FLOOD` whose `transport_codes[0]` matches
+  `HMAC-SHA256(key, payload_type‖payload)[:2]` is also relayed (see the `rooms`
+  line in `status` — `transport-flood-seen`/`region-relayed`).
 
-- It only bites on packets that carry MeshCore **transport codes**
-  (`ROUTE_TYPE_TRANSPORT_FLOOD`). *Plain*-flood group messages have no region tag,
-  so `#room` filtering can't act on them. Check `meshcore-cli status` → the
-  **`rooms`** line: if `transport-flood-seen` stays `0`, your mesh isn't using
-  Transport and there's nothing for rooms to match.
-- The transport code proves the sender knew the (public) region **name**, not that
-  the content is public — anyone who knows `#name` can produce a match. It's a
-  routing/scoping filter, not authentication. Only list regions you're content to
-  relay in the clear on the amateur band.
+This does **not** relax the content policy: the repeater holds the (name-derived,
+public) key, so it can prove the message really is that public channel — DMs and
+any channel/region you haven't listed are still dropped. Only list `#names` whose
+key is genuinely public and that you're content to relay in the clear on the ham
+band (anyone who knows the name can derive the key — it's not authentication).
 
 ### Ping/pong
 

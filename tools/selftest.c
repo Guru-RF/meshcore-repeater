@@ -716,6 +716,10 @@ static void test_rooms(void)
     static const uint8_t K[16] = { 0x9c,0xd8,0xfc,0xf2,0x2a,0x47,0x33,0x3b,
                                    0x59,0x1d,0x96,0xa2,0xb8,0x48,0xb7,0x3f };
     CHECK(memcmp(cfg.room_key[0], K, 16) == 0, "room_key = SHA256(\"#test\")[0..15]");
+    CHECK(cfg.n_public_channels == 1 && cfg.public_channels[0].derived &&
+          cfg.public_channels[0].secret_len == 16 &&
+          memcmp(cfg.public_channels[0].secret, K, 16) == 0,
+          "room #test also registers a derived public channel (same key)");
     CHECK(config_set(&cfg, "room", "test") == 0 && cfg.n_rooms == 1, "bare 'test' normalises to #test (dedup)");
     CHECK(config_set(&cfg, "room", "#other") == 0 && cfg.n_rooms == 2, "a second region adds");
     CHECK(config_set(&cfg, "room", "#") == -2, "bare '#' rejected");
@@ -815,7 +819,8 @@ static void test_monitor(void)
     CHECK(monitor_wants_public(&mon.conn[1], "AnyChan"), "MON_PUBLIC wants any public channel");
     CHECK(monitor_wants_public(&mon.conn[3], "other") && !monitor_wants_public(&mon.conn[3], "public"),
           "MON_CHANNEL 'other' matches only channel 'other'");
-    CHECK(!monitor_wants_public(&mon.conn[2], "AnyChan"), "MON_ROOM ignores public channels");
+    CHECK(monitor_wants_public(&mon.conn[2], "#sysop") && !monitor_wants_public(&mon.conn[2], "AnyChan"),
+          "MON_ROOM '#sysop' also matches the #sysop channel by name");
     CHECK(monitor_wants_room(&mon.conn[0], "#sysop"), "MON_ALL wants any room");
     CHECK(monitor_wants_room(&mon.conn[2], "#sysop") && !monitor_wants_room(&mon.conn[2], "#other"),
           "MON_ROOM '#sysop' matches only '#sysop' (case-sensitive)");
