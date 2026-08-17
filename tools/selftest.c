@@ -460,6 +460,68 @@ static void test_ping_channel(void)
       remove(tmp); }
 }
 
+static void test_probe(void)
+{
+    printf("[probe: authorised coverage/range test on #mesh]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    uint8_t raw[MC_MAX_TRANS_UNIT]; int n;
+
+    /* authorisation: empty list = off; wildcard match otherwise */
+    { mc_config_t c; config_defaults(&c);
+      CHECK(!config_probe_allowed(&c, "OR7F-1"), "probe off by default (empty allow list)");
+      config_set(&c, "probe_allow", "OR7F*");
+      config_set(&c, "probe_allow", "ON6URE*");
+      CHECK(config_probe_allowed(&c, "OR7F-3") && config_probe_allowed(&c, "ON6URE-1") &&
+            !config_probe_allowed(&c, "ON4XYZ-2"), "probe_allow wildcard match"); }
+
+    /* an authorised "probe 2 3" on #mesh starts a 3-probe run; service sends them */
+    { mc_config_t cfg; config_defaults(&cfg);
+      config_set(&cfg, "room", "mesh");                 /* #mesh = public_channels[0] */
+      config_set(&cfg, "probe_allow", "OR7F*");
+      sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "OR7F-1: probe 2 3", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.probe_remaining == 3, "authorised 'probe 2 3' -> 3 pending");
+      uint64_t t0 = m.probe_next_ms;                    /* first probe is due now */
+      mesh_service_probe(&m, t0);
+      CHECK(m.stats.probes_sent == 1 && m.probe_remaining == 2, "first probe sent immediately");
+      mesh_service_probe(&m, t0 + 1000);                /* 1s < 2s interval */
+      CHECK(m.stats.probes_sent == 1, "second probe waits for the interval");
+      mesh_service_probe(&m, t0 + 2000);                /* interval elapsed */
+      CHECK(m.stats.probes_sent == 2 && m.probe_remaining == 1, "next probe after the interval"); }
+
+    /* an UNauthorised sender is ignored */
+    { mc_config_t cfg; config_defaults(&cfg);
+      config_set(&cfg, "room", "mesh"); config_set(&cfg, "probe_allow", "OR7F*");
+      sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "ON4XYZ-2: probe 2 3", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.probe_remaining == 0, "unauthorised probe request ignored"); }
+
+    /* count is clamped to the max */
+    { mc_config_t cfg; config_defaults(&cfg);
+      config_set(&cfg, "room", "mesh"); config_set(&cfg, "probe_allow", "OR7F*");
+      sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "OR7F-1: probe 1 99999", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.probe_remaining == 100, "probe count clamped to the max (100)"); }
+
+    /* probe_allow round-trips through save/load */
+    { mc_config_t a; config_defaults(&a);
+      config_set(&a, "probe_allow", "OR7F*"); config_set(&a, "probe_allow", "ON6URE*");
+      const char *tmp = "/tmp/mc_probe_rt.conf"; config_save(&a, tmp);
+      mc_config_t b; config_defaults(&b); config_load(&b, tmp);
+      CHECK(b.n_probe_allow == 2 && config_probe_allowed(&b, "ON6URE-9"),
+            "probe_allow survives save->load");
+      remove(tmp); }
+}
+
 static void test_blacklist(void)
 {
     printf("[blacklist / moderation]\n");
@@ -951,6 +1013,7 @@ int main(void)
     test_mesh_policy();
     test_ping_pong();
     test_ping_channel();
+    test_probe();
     test_blacklist();
     test_aprs();
     test_hotspot();

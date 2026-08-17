@@ -5,6 +5,7 @@
 #include "log.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
@@ -75,6 +76,7 @@ static void cmd_help(void)
         "  channels             list configured public channels (forwarded)\n"
         "  blacklist [add|remove|list] <name>   ignore a node by name\n"
         "  monitor [all|public|<chan>|#room]    stream live messages (meshcore-cli)\n"
+        "  probe <secs> <count> send a coverage-test probe (0 count = cancel)\n"
         "  advert               send a self-advert now\n"
         "  save                 write config back to file\n"
         "  reload               reload config file (hardware keys need restart)\n"
@@ -112,10 +114,14 @@ static void cmd_status(cli_ctx_t *ctx)
     printf("rooms     : %d configured  transport-flood-seen %llu  region-relayed %llu\n",
            ctx->cfg->n_rooms, (unsigned long long)s->rx_transport_flood,
            (unsigned long long)s->fwd_region);
-    printf("ping/pong : %s  ping-seen %llu  pong-sent %llu   verbose %s\n",
+    printf("ping/pong : %s on %s  ping-seen %llu  pong-sent %llu   verbose %s\n",
            ctx->cfg->ping_pong ? "on" : "off",
+           ctx->cfg->ping_channel[0] ? ctx->cfg->ping_channel : "any",
            (unsigned long long)s->ping_seen, (unsigned long long)s->pong_sent,
            ctx->cfg->verbose ? "on" : "off");
+    printf("probe     : allow %d  sent %llu%s\n",
+           ctx->cfg->n_probe_allow, (unsigned long long)s->probes_sent,
+           ctx->mesh->probe_remaining > 0 ? "  (active)" : "");
     printf("blacklist : %d entries  ignored %llu   control port %u\n",
            ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
     if (ctx->cfg->role == ROLE_HOTSPOT)
@@ -225,6 +231,22 @@ void cli_handle_line(cli_ctx_t *ctx, const char *line)
         cmd_blacklist(ctx, sub, name);
     } else if (!strcasecmp(cmd, "advert")) {
         mesh_send_advert(ctx->mesh);
+    } else if (!strcasecmp(cmd, "probe")) {
+        /* local admin trigger (no probe_allow check): a coverage/range test */
+        char *a = strtok(NULL, " \t\r\n"), *b = strtok(NULL, " \t\r\n");
+        int secs = a ? atoi(a) : 0, count = b ? atoi(b) : 0;
+        const mc_config_t *c = ctx->cfg;
+        const mc_pub_channel_t *pch = NULL;
+        if (c->ping_channel[0])
+            for (int i = 0; i < c->n_public_channels; i++)
+                if (!strcmp(c->public_channels[i].name, c->ping_channel)) { pch = &c->public_channels[i]; break; }
+        if (!pch && c->n_public_channels > 0) pch = &c->public_channels[0];
+        if (!pch)
+            printf("probe: no public channel to send on\n");
+        else if (count <= 0) { mesh_start_probe(ctx->mesh, pch, 0, 0); printf("probe: cancelled\n"); }
+        else { mesh_start_probe(ctx->mesh, pch, secs, count);
+               printf("probe: %d x every %ds on %s\n", count, secs, pch->name[0] ? pch->name : "-"); }
+        fflush(stdout);
     } else if (!strcasecmp(cmd, "monitor")) {
         /* Over the control port this is intercepted before dispatch and streams
          * events; reaching here means the interactive stdin CLI, which can't hold

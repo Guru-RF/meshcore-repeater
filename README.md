@@ -300,6 +300,7 @@ the repeater joins that network out of the box:
 | `room` | *(none)* | hashtag `#channel`(s) to relay, key auto-derived (repeatable) — see below |
 | `ping_pong` | `true` | answer `ping` with `pong` (a liveness test) |
 | `ping_channel` | `mesh` | channel ping/pong answers on; `any` = every channel |
+| `probe_allow` | *(none)* | callsign pattern(s) allowed to run `probe` (repeatable; empty = off) |
 | `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
 
 > To interoperate with the mesh, **`frequency`, `bandwidth`, `spreading_factor`,
@@ -392,6 +393,20 @@ matches an exact `ping`, and broadcasts back the signal it heard your ping at:
 so you learn both that the repeater is alive and how well it received you. Set
 `ping_channel` to a different channel name to move it, or to `any` to answer a
 `ping` on every public channel (the old behaviour).
+
+**`probe` (range/coverage test).** An **authorised** operator sends
+`probe <secs> <count>` on `#mesh`, and the repeater transmits `probe 1/N`,
+`probe 2/N`, … one every `<secs>` seconds — so you can walk/drive away and see how
+many you still receive and at what RSSI/SNR. It's **off by default**: only
+callsign patterns in `probe_allow` (same wildcards as `home`/`blacklist`) may
+trigger it, so randoms can't make your repeater transmit. `probe stop` cancels;
+bounds are `secs 1..3600`, `count 1..100`. The local operator can also fire one
+without the allow-list from the repeater side: `meshcore-cli probe <secs> <count>`.
+
+```
+probe_allow = ON6URE*      # who may run it (repeatable; empty = nobody)
+probe_allow = OR7F*
+```
 
 ### Verbose (`-v`)
 

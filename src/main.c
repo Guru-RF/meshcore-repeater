@@ -257,6 +257,7 @@ int main(int argc, char **argv)
 
         /* 2. transmit due packets */
         mesh_service_tx(&mesh, now);
+        mesh_service_probe(&mesh, now);
         if (mesh.stats.tx_total != prev_tx) {
             prev_tx = mesh.stats.tx_total;
             activity = true;

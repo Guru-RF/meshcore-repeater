@@ -22,6 +22,7 @@
 #define MC_MAX_HOME            8
 #define MC_MAX_ROOMS           8    /* transport "hashtag rooms" (MeshCore regions) */
 #define MC_ROOM_NAME_LEN       32
+#define MC_MAX_PROBE_ALLOW     8    /* callsign patterns allowed to run `probe` */
 #define MC_NAME_PAT_LEN        32   /* >= aname[32]/MC_BLACKLIST_NAME_LEN so exact patterns match */
 
 /* Operating role: a full licensed wide-area repeater, or a personal hotspot that
@@ -74,6 +75,10 @@ typedef struct {
     bool     forward;            /* act as a repeater (allow packet forwarding) */
     bool     ping_pong;          /* answer "ping" on a public channel with "pong" */
     char     ping_channel[MC_ROOM_NAME_LEN]; /* only answer ping here (e.g. "#mesh"); empty = any */
+    /* callsign patterns allowed to trigger `probe <secs> <count>` on the ping channel
+     * (a coverage/range test). Empty list = feature off (nobody may run it). */
+    char     probe_allow[MC_MAX_PROBE_ALLOW][MC_NAME_PAT_LEN];
+    int      n_probe_allow;
     bool     verbose;            /* -v: log public messages, adverts, and drops (runtime only) */
 
     /* ---- ham content policy ----
@@ -127,6 +132,7 @@ typedef struct {
 bool config_name_matches(const char *pattern, const char *name);
 bool config_is_home(const mc_config_t *cfg, const char *name);
 bool config_is_affinity(const mc_config_t *cfg, const char *name);
+bool config_probe_allowed(const mc_config_t *cfg, const char *name);
 
 /* Validate the node name against its role. A repeater IDs with a bare callsign;
  * a hotspot MAY append an SSID "-NN" (00..99) so one operator can run several,

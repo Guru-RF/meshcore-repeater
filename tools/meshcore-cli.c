@@ -27,14 +27,15 @@
 /* Tab-completion tables (kept in sync with the repeater's CLI by hand). */
 static const char *COMMANDS[] = {
     "help", "status", "stats", "neighbors", "channels", "blacklist", "monitor",
-    "freq", "set", "get", "advert", "save", "reload", "quit", "exit", NULL
+    "probe", "freq", "set", "get", "advert", "save", "reload", "quit", "exit", NULL
 };
 static const char *BL_SUB[] = { "add", "remove", "list", NULL };
 static const char *CFG_KEYS[] = {
     "frequency", "bandwidth", "spreading_factor", "coding_rate", "tx_power",
     "preamble", "sync_word", "crc", "iq_inverted", "use_cad", "tcxo_voltage",
-    "ocp", "name", "advert_interval", "forward", "ping_pong", "control_port",
-    "location", "latitude", "longitude", "public_channel", "blacklist", NULL
+    "ocp", "name", "advert_interval", "forward", "ping_pong", "ping_channel",
+    "control_port", "location", "latitude", "longitude", "public_channel",
+    "blacklist", "room", "probe_allow", NULL
 };
 
 static const char **g_list;   /* which table the active generator walks */

@@ -50,6 +50,7 @@ typedef struct {
     uint64_t grp_mac_fail;    /* channel-hash matched a public chan but MAC failed */
     uint64_t ping_seen;       /* "ping" received on a public channel */
     uint64_t pong_sent;       /* "pong" answers transmitted */
+    uint64_t probes_sent;     /* coverage-probe messages transmitted */
     uint64_t blacklisted;     /* packets dropped from blacklisted senders */
     uint64_t tx_total;
     uint64_t tx_cad_busy;
@@ -96,9 +97,24 @@ typedef struct {
      * their adverts, used to tell "from the mesh" (downlink) from "local" (uplink) */
     uint8_t affinity_hash[MC_MAX_AFFINITY];
     int     n_affinity_hash;
+
+    /* active coverage probe: send "probe seq/total" every interval, `remaining`
+     * times, on probe_ch (copied so a config reload can't dangle it). */
+    mc_pub_channel_t probe_ch;
+    uint32_t probe_interval_ms;
+    int      probe_total;
+    int      probe_remaining;
+    int      probe_seq;
+    uint64_t probe_next_ms;
 } mc_mesh_t;
 
 void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg);
+
+/* Start (or, count<=0, cancel) a coverage probe: `count` "probe" messages, one
+ * every `secs` seconds, on channel ch. Bounds are clamped. */
+void mesh_start_probe(mc_mesh_t *m, const mc_pub_channel_t *ch, int secs, int count);
+/* Service the active probe (call every loop iteration, like mesh_service_tx). */
+void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms);
 
 /* Handle a freshly received raw packet (rssi/snr from the radio). */
 void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,

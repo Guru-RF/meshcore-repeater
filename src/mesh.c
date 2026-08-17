@@ -338,6 +338,27 @@ static bool is_ping(const char *msg)
     return *p == '\0';                     /* exactly "ping" (+ trailing space) */
 }
 
+/* Parse "probe <secs> <count>" (or "probe stop"/"probe cancel" -> 0,0). Returns
+ * true if the body is a probe command; secs and count get the (unclamped) args. */
+static bool is_probe(const char *msg, int *secs, int *count)
+{
+    while (*msg == ' ' || *msg == '\t') msg++;
+    if (strncasecmp(msg, "probe", 5) != 0)
+        return false;
+    const char *p = msg + 5;
+    if (*p != ' ' && *p != '\t' && *p != '\0')
+        return false;                       /* "probeXYZ" is not the command */
+    while (*p == ' ' || *p == '\t') p++;
+    if (!strncasecmp(p, "stop", 4) || !strncasecmp(p, "cancel", 6)) {
+        *secs = 0; *count = 0; return true;
+    }
+    int s = 0, c = 0;
+    if (sscanf(p, "%d %d", &s, &c) == 2) {
+        *secs = s; *count = c; return true;
+    }
+    return false;
+}
+
 /* Build an encrypted public GRP_TXT carrying "sender: text". Returns 0 on ok. */
 static int channel_build_txt(const mc_pub_channel_t *ch, const char *sender,
                              const char *text, uint32_t ts, mc_packet_t *pkt)
@@ -393,6 +414,47 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
 }
 
+#define MESH_PROBE_MAX_SECS   3600
+#define MESH_PROBE_MAX_COUNT  100
+
+void mesh_start_probe(mc_mesh_t *m, const mc_pub_channel_t *ch, int secs, int count)
+{
+    if (count <= 0) {                                    /* stop/cancel */
+        if (m->probe_remaining > 0) log_info("probe: cancelled");
+        m->probe_remaining = 0;
+        return;
+    }
+    if (secs  < 1)                    secs  = 1;
+    if (secs  > MESH_PROBE_MAX_SECS)  secs  = MESH_PROBE_MAX_SECS;
+    if (count > MESH_PROBE_MAX_COUNT) count = MESH_PROBE_MAX_COUNT;
+    m->probe_ch          = *ch;                          /* copy: reload-safe */
+    m->probe_interval_ms = (uint32_t)secs * 1000u;
+    m->probe_total       = count;
+    m->probe_remaining   = count;
+    m->probe_seq         = 0;
+    m->probe_next_ms     = hal_millis();                 /* first one right away */
+    log_info("probe: %d x every %ds on '%s'", count, secs, ch->name[0] ? ch->name : "-");
+}
+
+void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms)
+{
+    if (m->probe_remaining <= 0 || now_ms < m->probe_next_ms)
+        return;
+    m->probe_seq++;
+    char txt[48];
+    snprintf(txt, sizeof(txt), "probe %d/%d", m->probe_seq, m->probe_total);
+    mc_packet_t pkt;
+    if (channel_build_txt(&m->probe_ch, m->cfg->name, txt, (uint32_t)time(NULL), &pkt) == 0) {
+        uint8_t hash[MC_MAX_HASH_SIZE];
+        pkt_calc_hash(&pkt, hash);
+        seen_check_and_add(m, hash);                     /* our echo is a dup */
+        enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+        m->stats.probes_sent++;
+    }
+    m->probe_remaining--;
+    m->probe_next_ms = now_ms + m->probe_interval_ms;
+}
+
 /* Copy the self-reported sender name (the text before the first ": "). */
 static void grp_sender_name(const uint8_t *plain, char *out, size_t outsz)
 {
@@ -437,15 +499,22 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
     if (m->mon)
         monitor_public(m->mon, ch->name, (const char *)&plain[5], pkt->rssi_dbm, pkt->snr_q);
 
-    if (m->cfg->ping_pong) {
-        const char *body = grp_message_body(plain, plen);
-        if (body && is_ping(body)) {
+    const char *body = grp_message_body(plain, plen);
+    if (body) {
+        /* ping/pong and probe live on the ping channel (default "#mesh"); an
+         * empty ping_channel means any public channel. */
+        bool on_ping_ch = (m->cfg->ping_channel[0] == '\0' ||
+                           strcmp(ch->name, m->cfg->ping_channel) == 0);
+        int secs, count;
+        if (m->cfg->ping_pong && is_ping(body)) {
             m->stats.ping_seen++;
-            /* answer only on the configured ping channel (default "#mesh"); an
-             * empty ping_channel means answer on any public channel. */
-            if (m->cfg->ping_channel[0] == '\0' ||
-                strcmp(ch->name, m->cfg->ping_channel) == 0)
-                send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);   /* answer in both roles */
+            if (on_ping_ch)
+                send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);
+        } else if (on_ping_ch && m->cfg->n_probe_allow > 0 &&
+                   is_probe(body, &secs, &count) && config_probe_allowed(m->cfg, sender)) {
+            /* an authorised operator starts a coverage/range test from a device */
+            log_info("probe: requested by '%s' (%ds x %d)", sender, secs, count);
+            mesh_start_probe(m, ch, secs, count);
         }
     }
     return true;

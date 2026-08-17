@@ -77,6 +77,7 @@ void config_defaults(mc_config_t *cfg)
     cfg->role               = ROLE_REPEATER;
     cfg->n_affinity         = 0;
     cfg->n_home             = 0;
+    cfg->n_probe_allow      = 0;
     cfg->hotspot_power_high = 22;      /* uplink: chip max ~ +30 dBm / 1 W at antenna */
     cfg->hotspot_power_low  = -9;      /* downlink: chip minimum (well under 100 mW) */
 }
@@ -98,6 +99,14 @@ bool config_is_home(const mc_config_t *cfg, const char *name)
     for (int i = 0; i < cfg->n_home; i++)
         if (config_name_matches(cfg->home[i], name)) return true;
     return false;
+}
+
+bool config_probe_allowed(const mc_config_t *cfg, const char *name)
+{
+    if (!name || !name[0]) return false;
+    for (int i = 0; i < cfg->n_probe_allow; i++)
+        if (config_name_matches(cfg->probe_allow[i], name)) return true;
+    return false;   /* empty list -> nobody (feature off) */
 }
 
 bool config_is_affinity(const mc_config_t *cfg, const char *name)
@@ -488,6 +497,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     }
     if (!strcasecmp(key, "affinity")) return list_add(cfg->affinity, &cfg->n_affinity, MC_MAX_AFFINITY, val);
     if (!strcasecmp(key, "home"))     return list_add(cfg->home, &cfg->n_home, MC_MAX_HOME, val);
+    if (!strcasecmp(key, "probe_allow")) return list_add(cfg->probe_allow, &cfg->n_probe_allow, MC_MAX_PROBE_ALLOW, val);
     if (!strcasecmp(key, "hotspot_power_high") || !strcasecmp(key, "hotspot_power_low")) {
         char *end = NULL; long p = strtol(val, &end, 10);
         if (end == val || *end != '\0' || p < -9 || p > 22) return -2;
@@ -554,6 +564,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "role"))             { snprintf(out, outsz, "%s", cfg->role == ROLE_HOTSPOT ? "hotspot" : "repeater"); return 0; }
     if (!strcasecmp(key, "affinity"))         { snprintf(out, outsz, "%d entries", cfg->n_affinity); return 0; }
     if (!strcasecmp(key, "home"))             { snprintf(out, outsz, "%d entries", cfg->n_home); return 0; }
+    if (!strcasecmp(key, "probe_allow"))      { snprintf(out, outsz, "%d entries", cfg->n_probe_allow); return 0; }
     if (!strcasecmp(key, "hotspot_power_high")){ snprintf(out, outsz, "%d", cfg->hotspot_power_high); return 0; }
     if (!strcasecmp(key, "hotspot_power_low")) { snprintf(out, outsz, "%d", cfg->hotspot_power_low); return 0; }
     return -1;
@@ -593,6 +604,7 @@ int config_load(mc_config_t *cfg, const char *path)
     cfg->n_blacklist = 0;
     cfg->n_affinity = 0;
     cfg->n_home = 0;
+    cfg->n_probe_allow = 0;
 
     char line[1024];
     int lineno = 0;
@@ -694,6 +706,8 @@ int config_save(const mc_config_t *cfg, const char *path)
         fprintf(f, "%-18s = %s\n", "affinity", cfg->affinity[i]);
     for (int i = 0; i < cfg->n_home; i++)
         fprintf(f, "%-18s = %s\n", "home", cfg->home[i]);
+    for (int i = 0; i < cfg->n_probe_allow; i++)
+        fprintf(f, "%-18s = %s\n", "probe_allow", cfg->probe_allow[i]);
     /* emit the BARE name (skip the stored leading '#'): '#' starts a comment in
      * the config file, so a "room = #x" line would be stripped to empty on load.
      * add_room re-adds the '#'. */
