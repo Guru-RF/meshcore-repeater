@@ -155,11 +155,48 @@ static bool hotspot_decide(mc_mesh_t *m, const mc_packet_t *pkt,
 typedef enum {
     FWD_OK_PUBLIC,        /* advert / trace (already sig-checked upstream) */
     FWD_OK_GRP_PUBLIC,    /* group message on a configured public channel */
+    FWD_OK_REGION,        /* transport-flood tagged for a served #room region */
     FWD_DROP_DM,          /* private pairwise-encrypted unicast */
     FWD_DROP_GRP_UNMATCHED,/* group message on an unconfigured channel */
     FWD_DROP_GRP_MACFAIL, /* channel hash matched but the MAC did not verify */
     FWD_DROP_OTHER,       /* ack / control / multipart / raw / unknown types */
 } fwd_decision_t;
+
+/* MeshCore transport-region code: HMAC-SHA256(room_key, payload_type||payload)
+ * truncated to 2 bytes, read as a little-endian uint16, with 0x0000/0xFFFF
+ * reserved. Mirrors TransportKey::calcTransportCode. */
+static uint16_t region_transport_code(const uint8_t key[16], uint8_t ptype,
+                                      const uint8_t *payload, size_t plen)
+{
+    uint8_t msg[1 + MC_MAX_PACKET_PAYLOAD];
+    if (plen > MC_MAX_PACKET_PAYLOAD)
+        plen = MC_MAX_PACKET_PAYLOAD;
+    msg[0] = ptype;
+    memcpy(&msg[1], payload, plen);
+    uint8_t h[32];
+    hmac_sha256(key, 16, msg, 1 + plen, h);
+    uint16_t code = (uint16_t)(h[0] | (h[1] << 8));
+    if (code == 0)           code = 1;
+    else if (code == 0xFFFF) code = 0xFFFE;
+    return code;
+}
+
+/* True if this packet is a TRANSPORT_FLOOD whose transport code matches one of
+ * the operator's configured #rooms (regions). Such group traffic is forwarded
+ * even without the channel key: the operator declared that region public. */
+static bool region_match(const mc_mesh_t *m, const mc_packet_t *pkt)
+{
+    if (pkt_route_type(pkt) != ROUTE_TYPE_TRANSPORT_FLOOD)
+        return false;
+    if (m->cfg->n_rooms == 0)
+        return false;
+    uint8_t ptype = pkt_payload_type(pkt);
+    for (int i = 0; i < m->cfg->n_rooms; i++)
+        if (region_transport_code(m->cfg->room_key[i], ptype,
+                                  pkt->payload, pkt->payload_len) == pkt->transport_codes[0])
+            return true;
+    return false;
+}
 
 /*
  * Decide whether a received packet may be retransmitted. Amateur-radio rules
@@ -205,6 +242,10 @@ static fwd_decision_t classify_forward(const mc_mesh_t *m, const mc_packet_t *pk
                 return FWD_OK_GRP_PUBLIC;      /* proven public content */
             }
         }
+        /* Not on a channel we hold: still forward if it is a transport-flood
+         * tagged for a #room region the operator has declared public. */
+        if (region_match(m, pkt))
+            return FWD_OK_REGION;
         return hash_seen ? FWD_DROP_GRP_MACFAIL : FWD_DROP_GRP_UNMATCHED;
     }
 
@@ -419,6 +460,9 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         return;
     }
 
+    if (pkt_route_type(&pkt) == ROUTE_TYPE_TRANSPORT_FLOOD)
+        m->stats.rx_transport_flood++;      /* diagnostic: is the mesh using Transport? */
+
     uint8_t pt = pkt_payload_type(&pkt);
     uint8_t atype = 0; char aname[32] = "";                 /* advert name/type (hotspot) */
     char grp_sender[MC_BLACKLIST_NAME_LEN] = "";            /* decrypted public sender (hotspot) */
@@ -478,6 +522,11 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         if (!process_public_grp(m, &pkt, pub_ch, grp_sender, sizeof(grp_sender)))
             return;                                 /* blacklisted sender -> don't forward */
         m->stats.fwd_grp_public++;
+    } else if (decision == FWD_OK_REGION) {
+        /* region-tagged group traffic: forwarded opaquely (no key to decrypt) */
+        m->stats.fwd_region++;
+        if (m->cfg->verbose)
+            log_info("[region] relaying type=0x%02X for a served #room (opaque)", pt);
     } else if (decision != FWD_OK_PUBLIC) {   /* a drop */
         m->stats.fwd_denied++;
         switch (decision) {

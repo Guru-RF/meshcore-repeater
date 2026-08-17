@@ -41,6 +41,8 @@ typedef struct {
     uint64_t trace_seen;
     /* ham content policy (strict "forward public, drop private") */
     uint64_t fwd_grp_public;  /* group messages relayed on a public channel */
+    uint64_t fwd_region;      /* group messages relayed for a served #room region */
+    uint64_t rx_transport_flood; /* TRANSPORT_FLOOD packets seen (region-tagged) */
     uint64_t fwd_denied;      /* total packets dropped by the policy */
     uint64_t fwd_denied_dm;   /*   ...private unicast (req/resp/txt/anon/path) */
     uint64_t fwd_denied_grp;  /*   ...group message on a non-public channel */

@@ -20,6 +20,8 @@
 #define MC_BLACKLIST_NAME_LEN  32
 #define MC_MAX_AFFINITY        16   /* several repeaters in range (redundancy / mesh) */
 #define MC_MAX_HOME            8
+#define MC_MAX_ROOMS           8    /* transport "hashtag rooms" (MeshCore regions) */
+#define MC_ROOM_NAME_LEN       32
 #define MC_NAME_PAT_LEN        32   /* >= aname[32]/MC_BLACKLIST_NAME_LEN so exact patterns match */
 
 /* Operating role: a full licensed wide-area repeater, or a personal hotspot that
@@ -77,6 +79,16 @@ typedef struct {
      * messages on one of these declared PUBLIC channels are retransmitted. */
     mc_pub_channel_t public_channels[MC_MAX_PUBLIC_CHANNELS];
     int              n_public_channels;
+
+    /* ---- transport "hashtag rooms" (MeshCore regions / flood-scopes) ----
+     * Additive to the strict channel policy: forward group traffic tagged for a
+     * region we serve, WITHOUT holding the channel key, because the operator has
+     * declared that "#name" region public. A packet matches when it is a
+     * TRANSPORT_FLOOD whose transport_codes[0] equals
+     * HMAC-SHA256(room_key, payload_type||payload)[0..1] (little-endian). */
+    char     rooms[MC_MAX_ROOMS][MC_ROOM_NAME_LEN];  /* normalised, includes leading '#' */
+    uint8_t  room_key[MC_MAX_ROOMS][16];             /* SHA256(name)[0..15] */
+    int      n_rooms;
 
     /* ---- moderation + control interface ---- */
     char     blacklist[MC_MAX_BLACKLIST][MC_BLACKLIST_NAME_LEN]; /* ignored node names */

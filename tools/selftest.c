@@ -700,6 +700,75 @@ static void test_node_name(void)
     CHECK(!config_valid_node_name(c.name, c.role, why, sizeof(why)), "ON6URE-3 flagged once role=repeater");
 }
 
+static void test_rooms(void)
+{
+    printf("[transport hashtag rooms (#name regions): SHA256(name) key + transport-code gate]\n");
+
+    /* config: normalisation, dedup, and the derived key vs an independent
+     * Python SHA256("#test")[0..15] = 9cd8fcf22a47333b591d96a2b848b73f */
+    mc_config_t cfg; config_defaults(&cfg);
+    CHECK(cfg.n_rooms == 0, "no rooms by default");
+    CHECK(config_set(&cfg, "room", "#test") == 0 && cfg.n_rooms == 1, "room #test added");
+    static const uint8_t K[16] = { 0x9c,0xd8,0xfc,0xf2,0x2a,0x47,0x33,0x3b,
+                                   0x59,0x1d,0x96,0xa2,0xb8,0x48,0xb7,0x3f };
+    CHECK(memcmp(cfg.room_key[0], K, 16) == 0, "room_key = SHA256(\"#test\")[0..15]");
+    CHECK(config_set(&cfg, "room", "test") == 0 && cfg.n_rooms == 1, "bare 'test' normalises to #test (dedup)");
+    CHECK(config_set(&cfg, "room", "#other") == 0 && cfg.n_rooms == 2, "a second region adds");
+    CHECK(config_set(&cfg, "room", "#") == -2, "bare '#' rejected");
+    CHECK(config_set(&cfg, "room", "") == -2, "empty room rejected");
+    /* length boundary: a normalised name must fit MC_ROOM_NAME_LEN (incl. '#'),
+     * and an over-long one is REJECTED, never truncated to a wrong-hash region */
+    { char at_limit[64], over[64];
+      memset(at_limit, 'a', MC_ROOM_NAME_LEN - 1); at_limit[0] = '#'; at_limit[MC_ROOM_NAME_LEN - 1] = '\0';
+      memset(over, 'a', MC_ROOM_NAME_LEN);         over[0] = '#';     over[MC_ROOM_NAME_LEN] = '\0';
+      mc_config_t rc; config_defaults(&rc);
+      CHECK(config_set(&rc, "room", at_limit) == 0 && rc.n_rooms == 1, "room name at length limit accepted");
+      CHECK(config_set(&rc, "room", over) == -2, "over-long room name rejected (not truncated)"); }
+
+    mc_identity_t id; mc_identity_generate(&id);
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    uint8_t raw[300]; int n;
+    /* channel_hash 0x11 + 2B MAC + 16B ciphertext (unconfigured channel here) */
+    uint8_t body[19] = { 0x11,0xAA,0xBB, 0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,
+                         0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC };
+    mc_packet_t p; memset(&p, 0, sizeof(p));
+    p.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_TRANSPORT_FLOOD);
+    p.path_len = 0x00;
+    memcpy(p.payload, body, sizeof(body)); p.payload_len = sizeof(body);
+
+    /* transport code 0x587D (Python) for [0x05]||body -> matches #test -> relayed opaque */
+    { mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      p.transport_codes[0] = 0x587D;
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.stats.rx_transport_flood == 1, "transport-flood counted (diagnostic)");
+      CHECK(m.stats.fwd_region == 1, "group traffic for a served #room is relayed without the key"); }
+
+    /* wrong transport code -> not our region -> dropped */
+    { mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      p.transport_codes[0] = 0x587C;
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.stats.fwd_region == 0 && m.stats.fwd_denied_grp == 1, "mismatched transport code dropped"); }
+
+    /* correct code but PLAIN flood (no transport codes) -> no region -> dropped */
+    { mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      p.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_FLOOD);
+      p.transport_codes[0] = 0x587D;
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.stats.fwd_region == 0 && m.stats.rx_transport_flood == 0, "plain-flood group (no region tag) dropped"); }
+
+    /* same transport-flood but NO #rooms configured -> dropped (strict default holds) */
+    { mc_config_t c2; config_defaults(&c2);
+      mc_mesh_t m; mesh_init(&m, &id, &c2);
+      p.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_TRANSPORT_FLOOD);
+      p.transport_codes[0] = 0x587D;
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+      CHECK(m.stats.fwd_region == 0, "no #rooms configured -> region traffic still dropped"); }
+}
+
 int main(void)
 {
     test_header();
@@ -719,6 +788,7 @@ int main(void)
     test_airtime();
     test_config();
     test_node_name();
+    test_rooms();
 
     printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
            g_fail, g_fail == 1 ? "" : "s");

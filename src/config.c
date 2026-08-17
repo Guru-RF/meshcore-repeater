@@ -300,6 +300,47 @@ static int add_public_channel(mc_config_t *cfg, const char *val)
     return 0;
 }
 
+/* Parse a "room = [#]<name>" transport region and append it. The key is
+ * SHA256("#name")[0..15]; MeshCore hashes the region name WITH a single leading
+ * '#', so we normalise to exactly one. Names are case-sensitive (hashed verbatim).
+ * Returns 0 ok/dup, -2 invalid/full. */
+static int add_room(mc_config_t *cfg, const char *val)
+{
+    /* Trim into a buffer wider than the limit so an over-long name is REJECTED
+     * below, not silently truncated into a wrong-hash region. */
+    char clean[MC_ROOM_NAME_LEN * 2];
+    trim_name(val, clean, sizeof(clean));
+    if (clean[0] == '\0')
+        return -2;
+
+    /* normalise to exactly one leading '#' (MeshCore hashes the name with it) */
+    char name[MC_ROOM_NAME_LEN * 2 + 2];
+    if (clean[0] == '#')
+        snprintf(name, sizeof(name), "%s", clean);
+    else
+        snprintf(name, sizeof(name), "#%s", clean);
+    if (name[1] == '\0')                        /* a bare "#" is not a region */
+        return -2;
+    if (strlen(name) >= MC_ROOM_NAME_LEN)       /* must round-trip through storage */
+        return -2;
+
+    for (int i = 0; i < cfg->n_rooms; i++)      /* dedup (verbatim: hashes differ by case) */
+        if (!strcmp(cfg->rooms[i], name))
+            return 0;
+    if (cfg->n_rooms >= MC_MAX_ROOMS)
+        return -2;
+
+    snprintf(cfg->rooms[cfg->n_rooms], MC_ROOM_NAME_LEN, "%s", name);
+    uint8_t digest[32];
+    SHA256_CTX c;
+    sha256_init(&c);
+    sha256_update(&c, (const uint8_t *)name, strlen(name));
+    sha256_final(&c, digest);
+    memcpy(cfg->room_key[cfg->n_rooms], digest, 16);   /* region key = SHA256(name)[0..15] */
+    cfg->n_rooms++;
+    return 0;
+}
+
 int config_set(mc_config_t *cfg, const char *key, const char *val)
 {
     uint32_t u;
@@ -387,6 +428,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "ping_pong")) { if (!parse_bool(val, &b)) return -2; cfg->ping_pong = b; return 0; }
     if (!strcasecmp(key, "control_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->control_port = (uint16_t)u; return 0; }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
+    if (!strcasecmp(key, "room"))           { return add_room(cfg, val); }
     if (!strcasecmp(key, "blacklist")) { return config_blacklist_add(cfg, val) < 0 ? -2 : 0; }
 
     /* ---- APRS-IS iGate ---- */
@@ -460,6 +502,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
+    if (!strcasecmp(key, "room"))             { snprintf(out, outsz, "%d configured", cfg->n_rooms); return 0; }
     if (!strcasecmp(key, "blacklist"))        { snprintf(out, outsz, "%d entries", cfg->n_blacklist); return 0; }
     if (!strcasecmp(key, "aprs_enable"))      { snprintf(out, outsz, "%s", cfg->aprs_enable ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "aprs_call"))        { snprintf(out, outsz, "%s", cfg->aprs_call); return 0; }
@@ -490,6 +533,7 @@ int config_load(mc_config_t *cfg, const char *path)
     /* list-valued keys: the file is authoritative, so clear them before
      * (re)reading rather than accumulating across reloads. */
     cfg->n_public_channels = 0;
+    cfg->n_rooms = 0;
     cfg->n_blacklist = 0;
     cfg->n_affinity = 0;
     cfg->n_home = 0;
@@ -585,6 +629,8 @@ int config_save(const mc_config_t *cfg, const char *path)
         fprintf(f, "%-18s = %s\n", "affinity", cfg->affinity[i]);
     for (int i = 0; i < cfg->n_home; i++)
         fprintf(f, "%-18s = %s\n", "home", cfg->home[i]);
+    for (int i = 0; i < cfg->n_rooms; i++)
+        fprintf(f, "%-18s = %s\n", "room", cfg->rooms[i]);
     fclose(f);
     return 0;
 }

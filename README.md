@@ -297,6 +297,7 @@ the repeater joins that network out of the box:
 | `advert_interval` | `1800` | seconds between self-adverts (0 = off); 30 min guarantees the mandatory ≥1 ID/hour with margin |
 | `name` | `HamRepeater` | advertised node name |
 | `public_channel` | *Public* | public channel key(s) to relay (repeatable) — see below |
+| `room` | *(none)* | transport `#region`(s) to relay, key auto-derived (repeatable) — see below |
 | `ping_pong` | `false` | answer `ping` on a public channel with `pong` |
 | `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
 
@@ -316,6 +317,7 @@ allow-list and drops anything not provably public:
 | Advert | ✅ | Ed25519-**signed** but plaintext (readable), verified before relay |
 | Trace | ✅ | plaintext |
 | Group message on a **configured public channel** | ✅ | key is published → not obscured |
+| Group message tagged for a **served `#room` region** | ✅ | opt-in; you declared that transport region public |
 | Direct/private message (DM, request, ACK, path…) | ❌ | end-to-end encrypted → obscured |
 | Group message on any other channel | ❌ | unknown key → obscured |
 
@@ -338,6 +340,37 @@ CLI lists what's configured; `status` shows the `policy:` counters
 > that published key is what makes relaying the traffic legal. The repeater
 > proves a message belongs to a configured channel, but it cannot judge whether
 > *you* were entitled to call that key public.
+
+### Hashtag rooms (transport regions)
+
+MeshCore has a second, **additive** way to scope forwarding: transport **regions**
+(a.k.a. hashtag rooms / flood-scopes), named `#something`. A region's key is
+**auto-derived** from its name — `SHA256("#name")` — so you configure a room by
+**name only**, never a key:
+
+```
+room = #belgium         # leading '#' optional; added if you omit it
+room = #meshcore
+```
+
+When a group message arrives as a **`TRANSPORT_FLOOD`** whose `transport_codes[0]`
+matches `HMAC-SHA256(SHA256("#name")[:16], payload_type‖payload)[:2]` for one of
+your rooms, the repeater **relays it even without holding that channel's key** —
+by listing the region you've declared it public. This never relaxes the rules
+above: DMs stay dropped, and group traffic that matches neither a configured
+`public_channel` **nor** a served `#room` is still dropped.
+
+Two things to know:
+
+- It only bites on packets that carry MeshCore **transport codes**
+  (`ROUTE_TYPE_TRANSPORT_FLOOD`). *Plain*-flood group messages have no region tag,
+  so `#room` filtering can't act on them. Check `meshcore-cli status` → the
+  **`rooms`** line: if `transport-flood-seen` stays `0`, your mesh isn't using
+  Transport and there's nothing for rooms to match.
+- The transport code proves the sender knew the (public) region **name**, not that
+  the content is public — anyone who knows `#name` can produce a match. It's a
+  routing/scoping filter, not authentication. Only list regions you're content to
+  relay in the clear on the amateur band.
 
 ### Ping/pong
 
