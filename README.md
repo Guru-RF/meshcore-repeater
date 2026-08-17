@@ -297,8 +297,9 @@ the repeater joins that network out of the box:
 | `advert_interval` | `1800` | seconds between self-adverts (0 = off); 30 min guarantees the mandatory ≥1 ID/hour with margin |
 | `name` | `HamRepeater` | advertised node name |
 | `public_channel` | *Public* | public channel key(s) to relay (repeatable) — see below |
-| `room` | *(none)* | transport `#region`(s) to relay, key auto-derived (repeatable) — see below |
-| `ping_pong` | `false` | answer `ping` on a public channel with `pong` |
+| `room` | *(none)* | hashtag `#channel`(s) to relay, key auto-derived (repeatable) — see below |
+| `ping_pong` | `true` | answer `ping` with `pong` (a liveness test) |
+| `ping_channel` | `mesh` | channel ping/pong answers on; `any` = every channel |
 | `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
 
 > To interoperate with the mesh, **`frequency`, `bandwidth`, `spreading_factor`,
@@ -376,17 +377,21 @@ band (anyone who knows the name can derive the key — it's not authentication).
 
 ### Ping/pong
 
-With `ping_pong = true` (and at least one `public_channel`), sending `ping` on a
-public channel makes the repeater reply on that same channel — a quick
-liveness/coverage check. It decrypts only public-channel text (using the
-published key), matches an exact `ping`, and broadcasts back the signal it heard
-your ping at:
+With `ping_pong = true` (the default), sending `ping` makes the repeater reply
+with `pong` — a quick liveness/coverage check. By default it answers only on the
+built-in **`#mesh`** channel (see [`ping_channel`](#hashtag-rooms--channels)
+below): `#mesh` is **always present** (auto-added, key derived from the name), so
+there's a fixed, well-known channel anyone can use to test the repeater without
+first agreeing on a key. It decrypts the channel text (with the derived key),
+matches an exact `ping`, and broadcasts back the signal it heard your ping at:
 
 ```
 <name>: pong rssi -95dBm snr 7.5dB
 ```
 
-so you learn both that the repeater is alive and how well it received you.
+so you learn both that the repeater is alive and how well it received you. Set
+`ping_channel` to a different channel name to move it, or to `any` to answer a
+`ping` on every public channel (the old behaviour).
 
 ### Verbose (`-v`)
 

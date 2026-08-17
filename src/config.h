@@ -73,6 +73,7 @@ typedef struct {
     uint32_t advert_interval;    /* seconds between self-adverts (0 = disabled) */
     bool     forward;            /* act as a repeater (allow packet forwarding) */
     bool     ping_pong;          /* answer "ping" on a public channel with "pong" */
+    char     ping_channel[MC_ROOM_NAME_LEN]; /* only answer ping here (e.g. "#mesh"); empty = any */
     bool     verbose;            /* -v: log public messages, adverts, and drops (runtime only) */
 
     /* ---- ham content policy ----

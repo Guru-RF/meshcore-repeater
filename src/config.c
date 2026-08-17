@@ -53,7 +53,8 @@ void config_defaults(mc_config_t *cfg)
     cfg->longitude       = 0.0;
     cfg->advert_interval = 1800;       /* 30 min: mandatory ham >=1 ID/hour, w/ margin */
     cfg->forward         = true;
-    cfg->ping_pong       = false;      /* opt-in: answer public "ping" with "pong" */
+    cfg->ping_pong       = true;       /* answer "ping" with "pong" (on the ping channel) */
+    snprintf(cfg->ping_channel, sizeof(cfg->ping_channel), "%s", "#mesh"); /* built-in test channel */
     cfg->verbose         = false;      /* set at runtime by the -v flag */
     cfg->control_port    = 4403;       /* local control interface on 127.0.0.1 (0 = off) */
 
@@ -442,6 +443,21 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "advert_interval")) { if (!parse_u32(val, &u)) return -2; cfg->advert_interval = u; return 0; }
     if (!strcasecmp(key, "forward")) { if (!parse_bool(val, &b)) return -2; cfg->forward = b; return 0; }
     if (!strcasecmp(key, "ping_pong")) { if (!parse_bool(val, &b)) return -2; cfg->ping_pong = b; return 0; }
+    if (!strcasecmp(key, "ping_channel")) {
+        char clean[MC_ROOM_NAME_LEN * 2];
+        trim_name(val, clean, sizeof(clean));
+        if (clean[0] == '\0' || !strcasecmp(clean, "any") || !strcasecmp(clean, "none") ||
+            !strcmp(clean, "-") || !strcmp(clean, "*")) {
+            cfg->ping_channel[0] = '\0';                   /* answer on any channel */
+            return 0;
+        }
+        char nm[MC_ROOM_NAME_LEN * 2 + 2];                 /* normalise to one leading '#' */
+        if (clean[0] == '#') snprintf(nm, sizeof(nm), "%s", clean);
+        else                 snprintf(nm, sizeof(nm), "#%s", clean);
+        if (strlen(nm) >= MC_ROOM_NAME_LEN) return -2;
+        snprintf(cfg->ping_channel, sizeof(cfg->ping_channel), "%s", nm);
+        return 0;
+    }
     if (!strcasecmp(key, "control_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->control_port = (uint16_t)u; return 0; }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
     if (!strcasecmp(key, "room"))           { return add_room(cfg, val); }
@@ -516,6 +532,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "advert_interval"))  { snprintf(out, outsz, "%u", cfg->advert_interval); return 0; }
     if (!strcasecmp(key, "forward"))          { snprintf(out, outsz, "%s", cfg->forward ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "ping_channel"))     { snprintf(out, outsz, "%s", cfg->ping_channel[0] ? cfg->ping_channel : "any"); return 0; }
     if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     if (!strcasecmp(key, "room"))             { snprintf(out, outsz, "%d configured", cfg->n_rooms); return 0; }
@@ -540,11 +557,32 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     return -1;
 }
 
+/* Make sure the ping channel (default "#mesh") exists as a decryptable channel,
+ * so ping/pong and monitoring always have it available even if the config file
+ * never mentioned it. It is a derived channel (key = SHA256("#name")[0..15]), not
+ * written back by config_save. */
+static void config_ensure_ping_channel(mc_config_t *cfg)
+{
+    if (cfg->ping_channel[0] == '\0')
+        return;
+    for (int i = 0; i < cfg->n_public_channels; i++)
+        if (strcmp(cfg->public_channels[i].name, cfg->ping_channel) == 0)
+            return;                                  /* already present */
+    uint8_t digest[32];
+    SHA256_CTX c;
+    sha256_init(&c);
+    sha256_update(&c, (const uint8_t *)cfg->ping_channel, strlen(cfg->ping_channel));
+    sha256_final(&c, digest);
+    register_channel(cfg, cfg->ping_channel, digest, 16, true);
+}
+
 int config_load(mc_config_t *cfg, const char *path)
 {
     FILE *f = fopen(path, "r");
-    if (!f)
+    if (!f) {
+        config_ensure_ping_channel(cfg);   /* no file: still guarantee #mesh */
         return -1;
+    }
 
     /* list-valued keys: the file is authoritative, so clear them before
      * (re)reading rather than accumulating across reloads. */
@@ -596,6 +634,8 @@ int config_load(mc_config_t *cfg, const char *path)
     }
     fclose(f);
 
+    config_ensure_ping_channel(cfg);   /* guarantee the ping/test channel exists */
+
     /* Nudge on the callsign/SSID convention once name + role are both final.
      * Never fatal - a bad ID is a compliance nit, not a reason to refuse to run. */
     char why[128];
@@ -627,6 +667,11 @@ int config_save(const mc_config_t *cfg, const char *path)
         if (config_get(cfg, KEYS[i], buf, sizeof(buf)) == 0)
             fprintf(f, "%-18s = %s\n", KEYS[i], buf);
     }
+    /* ping_channel: emit the BARE name ('#' would start a comment on reload);
+     * "any" means answer on every channel. Not in KEYS[] for that reason. */
+    fprintf(f, "%-18s = %s\n", "ping_channel",
+            cfg->ping_channel[0] == '\0' ? "any" :
+            (cfg->ping_channel[0] == '#' ? cfg->ping_channel + 1 : cfg->ping_channel));
     /* public_channel is a repeatable list; emit one line each (hex form, so no
      * base64 encoder is needed - it round-trips through hex2bin on load). */
     for (int i = 0; i < cfg->n_public_channels; i++) {

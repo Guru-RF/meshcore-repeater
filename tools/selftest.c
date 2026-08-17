@@ -343,6 +343,7 @@ static void test_ping_pong(void)
     mc_config_t cfg; config_defaults(&cfg);
     config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
     cfg.ping_pong = true;
+    cfg.ping_channel[0] = '\0';            /* answer on any channel (test the mechanism) */
     sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
     mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
     uint8_t raw[MC_MAX_TRANS_UNIT];
@@ -393,6 +394,46 @@ static void test_ping_pong(void)
     n = pkt_serialize(&chat, raw, sizeof(raw));
     mesh_on_recv(&mesh3, raw, (size_t)n, -70, 20);
     CHECK(mesh3.stats.pong_sent == 0, "ping_pong=off -> no pong");
+}
+
+static void test_ping_channel(void)
+{
+    printf("[ping restricted to the built-in #mesh channel]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    uint8_t raw[MC_MAX_TRANS_UNIT]; int n;
+
+    /* config_load auto-ensures the #mesh channel even with no room line, and the
+     * default ping_channel is #mesh */
+    { const char *tmp = "/tmp/mc_ping_ensure.conf";
+      FILE *f = fopen(tmp, "w"); if (f) { fputs("name = ON0TEST\n", f); fclose(f); }
+      mc_config_t c; config_defaults(&c); config_load(&c, tmp);
+      int has_mesh = 0;
+      for (int i = 0; i < c.n_public_channels; i++)
+          if (strcmp(c.public_channels[i].name, "#mesh") == 0) has_mesh = 1;
+      CHECK(has_mesh && strcmp(c.ping_channel, "#mesh") == 0,
+            "config_load ensures the #mesh ping channel (built in)");
+      remove(tmp); }
+
+    /* a "ping" ON #mesh is answered (ping_channel defaults to #mesh) */
+    { mc_config_t cfg; config_defaults(&cfg);
+      config_set(&cfg, "room", "mesh");             /* #mesh becomes public_channels[0] */
+      sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "Bob: ping", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.stats.ping_seen == 1 && m.stats.pong_sent == 1, "ping on #mesh -> pong"); }
+
+    /* a "ping" on a DIFFERENT channel is seen but NOT answered (ping moved to #mesh) */
+    { mc_config_t cfg; config_defaults(&cfg);
+      config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");  /* Public = [0], unnamed */
+      config_set(&cfg, "room", "mesh");                                /* #mesh = [1] */
+      sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "Bob: ping", &p);         /* on Public */
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.stats.ping_seen == 1 && m.stats.pong_sent == 0, "ping off the ping channel -> no pong"); }
 }
 
 static void test_blacklist(void)
@@ -557,7 +598,7 @@ static void test_hotspot(void)
     { mc_config_t hc; config_defaults(&hc);
       config_set(&hc, "role", "hotspot");
       config_set(&hc, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
-      hc.ping_pong = true;
+      hc.ping_pong = true; hc.ping_channel[0] = '\0';   /* answer on any channel */
       config_to_sx126x(&hc, &radio); sx126x_init(&radio);
       mc_mesh_t m; mesh_init(&m, &id, &hc);
       mc_packet_t p; build_public_text(&hc, "ON4ABC-9: ping", &p);
@@ -745,8 +786,10 @@ static void test_rooms(void)
       config_load(&rl, tmp);
       CHECK(rl.n_rooms == 1 && strcmp(rl.rooms[0], "#ora") == 0, "room survives save->load round-trip");
       CHECK(memcmp(rl.room_key[0], rt.room_key[0], 16) == 0, "round-tripped room key matches");
-      CHECK(rl.n_public_channels == 1 && rl.public_channels[0].derived,
-            "derived channel is re-created from the room line (not double-written)");
+      int n_ora = 0;
+      for (int i = 0; i < rl.n_public_channels; i++)
+          if (strcmp(rl.public_channels[i].name, "#ora") == 0 && rl.public_channels[i].derived) n_ora++;
+      CHECK(n_ora == 1, "derived #ora channel re-created exactly once (not lost/double-written)");
       remove(tmp); }
 
     mc_identity_t id; mc_identity_generate(&id);
@@ -883,6 +926,7 @@ int main(void)
     test_mesh_direct();
     test_mesh_policy();
     test_ping_pong();
+    test_ping_channel();
     test_blacklist();
     test_aprs();
     test_hotspot();

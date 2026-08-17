@@ -441,7 +441,11 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         const char *body = grp_message_body(plain, plen);
         if (body && is_ping(body)) {
             m->stats.ping_seen++;
-            send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);   /* answer in both roles */
+            /* answer only on the configured ping channel (default "#mesh"); an
+             * empty ping_channel means answer on any public channel. */
+            if (m->cfg->ping_channel[0] == '\0' ||
+                strcmp(ch->name, m->cfg->ping_channel) == 0)
+                send_pong(m, ch, pkt->rssi_dbm, pkt->snr_q);   /* answer in both roles */
         }
     }
     return true;
