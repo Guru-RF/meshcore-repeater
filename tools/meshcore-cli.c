@@ -26,7 +26,7 @@
 
 /* Tab-completion tables (kept in sync with the repeater's CLI by hand). */
 static const char *COMMANDS[] = {
-    "help", "status", "stats", "neighbors", "channels", "blacklist",
+    "help", "status", "stats", "neighbors", "channels", "blacklist", "monitor",
     "freq", "set", "get", "advert", "save", "reload", "quit", "exit", NULL
 };
 static const char *BL_SUB[] = { "add", "remove", "list", NULL };

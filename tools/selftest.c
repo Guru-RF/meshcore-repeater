@@ -18,9 +18,11 @@
 #include "../src/aprsis.h"
 #include "../src/crypto/sha256.h"
 #include "../src/crypto/aes128.h"
+#include "../src/monitor.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static int g_fail = 0;
 #define CHECK(cond, ...) do { \
@@ -781,6 +783,64 @@ static void test_rooms(void)
       CHECK(m.stats.fwd_region == 0, "no #rooms configured -> region traffic still dropped"); }
 }
 
+static void test_monitor(void)
+{
+    printf("[monitor: target parsing + routing predicates]\n");
+    mc_monitor mon; monitor_init(&mon);
+    CHECK(monitor_count(&mon) == 0, "no monitors initially");
+
+    int pp[2];
+    if (pipe(pp) != 0) { CHECK(0, "pipe() for monitor test"); return; }
+
+    /* parsing: each target string -> kind + stored target */
+    CHECK(monitor_add(&mon, dup(pp[1]), "monitor") && mon.conn[0].kind == MON_ALL,
+          "monitor (no arg) -> MON_ALL");
+    CHECK(monitor_add(&mon, dup(pp[1]), "monitor public") && mon.conn[1].kind == MON_PUBLIC,
+          "monitor public -> MON_PUBLIC");
+    CHECK(monitor_add(&mon, dup(pp[1]), "monitor #sysop") && mon.conn[2].kind == MON_ROOM
+          && !strcmp(mon.conn[2].target, "#sysop"), "monitor #sysop -> MON_ROOM '#sysop'");
+    CHECK(monitor_add(&mon, dup(pp[1]), "monitor other") && mon.conn[3].kind == MON_CHANNEL
+          && !strcmp(mon.conn[3].target, "other"), "monitor other -> MON_CHANNEL 'other'");
+    CHECK(monitor_count(&mon) == 4, "four monitors registered");
+
+    int f5 = dup(pp[1]);
+    CHECK(!monitor_add(&mon, f5, "monitor all") && monitor_count(&mon) == 4,
+          "a 5th monitor is rejected at the cap");
+    close(f5);
+
+    /* routing predicates */
+    CHECK(monitor_wants_public(&mon.conn[0], "AnyChan"), "MON_ALL wants any public channel");
+    CHECK(monitor_wants_public(&mon.conn[1], "AnyChan"), "MON_PUBLIC wants any public channel");
+    CHECK(monitor_wants_public(&mon.conn[3], "other") && !monitor_wants_public(&mon.conn[3], "public"),
+          "MON_CHANNEL 'other' matches only channel 'other'");
+    CHECK(!monitor_wants_public(&mon.conn[2], "AnyChan"), "MON_ROOM ignores public channels");
+    CHECK(monitor_wants_room(&mon.conn[0], "#sysop"), "MON_ALL wants any room");
+    CHECK(monitor_wants_room(&mon.conn[2], "#sysop") && !monitor_wants_room(&mon.conn[2], "#other"),
+          "MON_ROOM '#sysop' matches only '#sysop' (case-sensitive)");
+    CHECK(!monitor_wants_room(&mon.conn[1], "#sysop"), "MON_PUBLIC ignores rooms");
+
+    for (int i = 0; i < mon.n; i++) close(mon.conn[i].fd);
+    close(pp[0]); close(pp[1]);
+
+    /* emit path: a MON_ALL monitor receives formatted public + region lines */
+    { mc_monitor m2; monitor_init(&m2);
+      int q[2];
+      if (pipe(q) == 0) {
+          monitor_add(&m2, dup(q[1]), "monitor all");        /* header written to pipe */
+          monitor_public(&m2, "TestChan", "ON4XYZ: hi", -70, 32);
+          monitor_region(&m2, "#sysop", 0x05, 42, -80, 20);
+          char buf[1024]; ssize_t rr = read(q[0], buf, sizeof(buf) - 1);
+          buf[rr > 0 ? rr : 0] = '\0';
+          CHECK(strstr(buf, "[public TestChan]") && strstr(buf, "ON4XYZ: hi"),
+                "monitor_public streams a formatted line");
+          CHECK(strstr(buf, "[room #sysop]") && strstr(buf, "type=0x05") && strstr(buf, "len=42B"),
+                "monitor_region streams region metadata");
+          for (int i = 0; i < m2.n; i++) close(m2.conn[i].fd);
+          close(q[0]); close(q[1]);
+      }
+    }
+}
+
 int main(void)
 {
     test_header();
@@ -801,6 +861,7 @@ int main(void)
     test_config();
     test_node_name();
     test_rooms();
+    test_monitor();
 
     printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
            g_fail, g_fail == 1 ? "" : "s");

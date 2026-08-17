@@ -33,7 +33,7 @@ LDLIBS_TEST   = -lm
 CORE_OBJ = \
   src/packet.o src/util.o src/identity.o src/advert.o src/mesh.o \
   src/sx126x.o src/config.o src/log.o src/hmac_sha256.o \
-  src/aprs.o src/aprsis.o
+  src/aprs.o src/aprsis.o src/monitor.o
 CRYPTO_OBJ = src/crypto/tweetnacl.o src/crypto/sha256.o src/crypto/randombytes.o src/crypto/aes128.o
 
 DAEMON_OBJ = $(CORE_OBJ) $(CRYPTO_OBJ) src/cli.o src/hal_linux.o src/main.o
@@ -44,9 +44,11 @@ CLI = meshcore-cli
 
 all: $(BIN) $(CLI)
 
-# our code: full warnings
+# our code: full warnings. -MMD -MP emits a .d with header deps so a changed
+# header (e.g. a struct layout in mesh.h) rebuilds every dependent object -
+# otherwise an incremental build silently mixes struct layouts.
 %.o: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) -MMD -MP -c $< -o $@
 
 # vendored crypto: don't enforce our warning policy on third-party code
 # (target-specific CFLAGS override - robust across make versions)
@@ -70,6 +72,9 @@ endif
 
 selftest: $(TEST_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(TEST_OBJ) $(LDLIBS_TEST)
+
+# pull in the generated header dependencies (no-op on a fresh tree)
+-include $(sort $(DAEMON_OBJ:.o=.d) $(TEST_OBJ:.o=.d))
 
 test: selftest
 	./selftest
@@ -112,6 +117,7 @@ uninstall:
 	@echo "to fully purge: sudo rm -rf $(INSTALL_DIR) && sudo userdel $(SERVICE_USER)"
 
 clean:
-	rm -f $(DAEMON_OBJ) $(TEST_OBJ) $(BIN) $(CLI) selftest
+	rm -f $(DAEMON_OBJ) $(TEST_OBJ) $(BIN) $(CLI) selftest \
+	      $(DAEMON_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
 
 .PHONY: all test install uninstall clean

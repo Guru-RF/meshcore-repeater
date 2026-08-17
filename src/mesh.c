@@ -7,6 +7,7 @@
 #include "util.h"
 #include "hmac_sha256.h"
 #include "aprsis.h"
+#include "monitor.h"
 #include "crypto/aes128.h"
 
 #include <ctype.h>
@@ -181,21 +182,25 @@ static uint16_t region_transport_code(const uint8_t key[16], uint8_t ptype,
     return code;
 }
 
-/* True if this packet is a TRANSPORT_FLOOD whose transport code matches one of
- * the operator's configured #rooms (regions). Such group traffic is forwarded
- * even without the channel key: the operator declared that region public. */
-static bool region_match(const mc_mesh_t *m, const mc_packet_t *pkt)
+/* Index of the configured #room (region) this packet is tagged for, or -1. A
+ * match means it is a TRANSPORT_FLOOD whose transport code equals one of ours -
+ * such group traffic is forwarded even without the channel key (the operator
+ * declared that region public). */
+static int region_match_index(const mc_mesh_t *m, const mc_packet_t *pkt)
 {
     if (pkt_route_type(pkt) != ROUTE_TYPE_TRANSPORT_FLOOD)
-        return false;
-    if (m->cfg->n_rooms == 0)
-        return false;
+        return -1;
     uint8_t ptype = pkt_payload_type(pkt);
     for (int i = 0; i < m->cfg->n_rooms; i++)
         if (region_transport_code(m->cfg->room_key[i], ptype,
                                   pkt->payload, pkt->payload_len) == pkt->transport_codes[0])
-            return true;
-    return false;
+            return i;
+    return -1;
+}
+
+static bool region_match(const mc_mesh_t *m, const mc_packet_t *pkt)
+{
+    return region_match_index(m, pkt) >= 0;
 }
 
 /*
@@ -429,6 +434,8 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
 
     if (m->cfg->verbose)
         log_info("[public %s] %s", ch->name[0] ? ch->name : "-", (const char *)&plain[5]);
+    if (m->mon)
+        monitor_public(m->mon, ch->name, (const char *)&plain[5], pkt->rssi_dbm, pkt->snr_q);
 
     if (m->cfg->ping_pong) {
         const char *body = grp_message_body(plain, plen);
@@ -527,6 +534,12 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         m->stats.fwd_region++;
         if (m->cfg->verbose)
             log_info("[region] relaying type=0x%02X for a served #room (opaque)", pt);
+        if (m->mon) {
+            int ri = region_match_index(m, &pkt);
+            if (ri >= 0)
+                monitor_region(m->mon, m->cfg->rooms[ri], pt, pkt.payload_len,
+                               rssi_dbm, snr_q);
+        }
     } else if (decision != FWD_OK_PUBLIC) {   /* a drop */
         m->stats.fwd_denied++;
         switch (decision) {
@@ -537,6 +550,8 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         }
         if (m->cfg->verbose)
             log_info("[ignored] type=0x%02X dropped: %s", pt, decision_reason(decision));
+        if (m->mon)
+            monitor_drop(m->mon, pt, decision_reason(decision));
         return;
     }
 

@@ -13,10 +13,12 @@
 #include "log.h"
 #include "util.h"
 #include "aprsis.h"
+#include "monitor.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <signal.h>
 #include <unistd.h>
 #include <poll.h>
@@ -81,6 +83,15 @@ static void control_accept(cli_ctx_t *ctx, int lfd)
     line[n] = '\0';
 
     if (n > 0) {
+        /* "monitor [target]" streams events: keep the connection open and hand
+         * the fd to the monitor table instead of the one-shot response path. */
+        if (!strncasecmp(line, "monitor", 7) &&
+            (line[7] == '\0' || line[7] == ' ' || line[7] == '\t')) {
+            if (ctx->mesh->mon && monitor_add(ctx->mesh->mon, cfd, line))
+                return;                       /* fd now owned by the monitor table */
+            close(cfd);                       /* not registered (full/disabled) -> done */
+            return;
+        }
         fflush(stdout);
         int saved = dup(STDOUT_FILENO);
         dup2(cfd, STDOUT_FILENO);
@@ -197,6 +208,11 @@ int main(int argc, char **argv)
     if (cfg.aprs_enable && aprsis_init(&aprs, &cfg, id.pub) == 0)
         mesh.aprs = &aprs;
 
+    /* live CLI message monitors (meshcore-cli monitor ...) */
+    mc_monitor monitor;
+    monitor_init(&monitor);
+    mesh.mon = &monitor;
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -262,8 +278,8 @@ int main(int argc, char **argv)
             data_led_off = 0;
         }
 
-        /* 4. local CLI + control socket + APRS-IS (all non-blocking) */
-        struct pollfd pfd[3];
+        /* 4. local CLI + control socket + APRS-IS + monitors (all non-blocking) */
+        struct pollfd pfd[3 + MC_MAX_MONITORS];
         int nfds = 0;
         int stdin_slot = -1, ctrl_slot = -1, aprs_slot = -1;
         short aprs_ev = 0;
@@ -271,6 +287,9 @@ int main(int argc, char **argv)
         if (stdin_open) { stdin_slot = nfds; pfd[nfds].fd = STDIN_FILENO; pfd[nfds].events = POLLIN; nfds++; }
         if (ctrl_fd >= 0) { ctrl_slot = nfds; pfd[nfds].fd = ctrl_fd; pfd[nfds].events = POLLIN; nfds++; }
         if (aprs_fd >= 0) { aprs_slot = nfds; pfd[nfds].fd = aprs_fd; pfd[nfds].events = aprs_ev; nfds++; }
+        int mon_slot = nfds;
+        int mon_count = monitor_pollfds(&monitor, &pfd[nfds], MC_MAX_MONITORS);
+        nfds += mon_count;
 
         if (nfds > 0) {
             int pr = poll(pfd, nfds, (r == 1) ? 0 : 5);
@@ -279,6 +298,7 @@ int main(int argc, char **argv)
                     stdin_open = pump_stdin(&ctx, acc, sizeof(acc), &acclen);
                 if (ctrl_slot >= 0 && (pfd[ctrl_slot].revents & POLLIN))
                     control_accept(&ctx, ctrl_fd);
+                monitor_reap(&monitor, &pfd[mon_slot], mon_count);   /* drop closed monitors */
             }
         } else {
             hal_delay_ms(5);

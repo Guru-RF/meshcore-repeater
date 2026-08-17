@@ -90,6 +90,7 @@ typedef struct {
     uint64_t     start_ms;
 
     struct mc_aprsis *aprs;   /* APRS-IS iGate (NULL = feature disabled) */
+    struct mc_monitor *mon;   /* live CLI message monitors (NULL = none) */
 
     /* hotspot role: path-hashes (pub[0]) of affinity repeaters, learned from
      * their adverts, used to tell "from the mesh" (downlink) from "local" (uplink) */
