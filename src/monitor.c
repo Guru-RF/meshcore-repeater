@@ -84,11 +84,12 @@ bool monitor_wants_public(const mc_mon_conn_t *c, const char *chan)
     switch (c->kind) {
     case MON_ALL:     return true;
     case MON_PUBLIC:  return true;
+    case MON_CHANNEL: return chan && *chan && strcasecmp(c->target, chan) == 0;
     /* MON_ROOM "#name" also matches the derived channel of the same name, so
-     * `monitor #sysop` shows the decrypted #sysop channel text (a MeshCore hashtag
-     * channel), not only its transport-region hits. */
-    case MON_CHANNEL:
-    case MON_ROOM:    return chan && *chan && strcasecmp(c->target, chan) == 0;
+     * `monitor #sysop` shows the decrypted #sysop channel text. Rooms/hashtag
+     * channels are CASE-SENSITIVE (hashed verbatim -> distinct keys), so match
+     * the channel name case-sensitively too - matching monitor_wants_room. */
+    case MON_ROOM:    return chan && *chan && strcmp(c->target, chan) == 0;
     default:          return false;
     }
 }

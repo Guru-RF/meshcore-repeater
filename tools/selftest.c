@@ -731,6 +731,8 @@ static void test_rooms(void)
       memset(over, 'a', MC_ROOM_NAME_LEN);         over[0] = '#';     over[MC_ROOM_NAME_LEN] = '\0';
       mc_config_t rc; config_defaults(&rc);
       CHECK(config_set(&rc, "room", at_limit) == 0 && rc.n_rooms == 1, "room name at length limit accepted");
+      CHECK(rc.n_public_channels == 1 && strcmp(rc.public_channels[0].name, rc.rooms[0]) == 0,
+            "derived channel stores the FULL room name (no truncation -> monitor #longname works)");
       CHECK(config_set(&rc, "room", over) == -2, "over-long room name rejected (not truncated)"); }
 
     /* save -> load round-trip: rooms are stored "#ora" but MUST be written as the
@@ -743,6 +745,8 @@ static void test_rooms(void)
       config_load(&rl, tmp);
       CHECK(rl.n_rooms == 1 && strcmp(rl.rooms[0], "#ora") == 0, "room survives save->load round-trip");
       CHECK(memcmp(rl.room_key[0], rt.room_key[0], 16) == 0, "round-tripped room key matches");
+      CHECK(rl.n_public_channels == 1 && rl.public_channels[0].derived,
+            "derived channel is re-created from the room line (not double-written)");
       remove(tmp); }
 
     mc_identity_t id; mc_identity_generate(&id);
@@ -825,6 +829,10 @@ static void test_monitor(void)
     CHECK(monitor_wants_room(&mon.conn[2], "#sysop") && !monitor_wants_room(&mon.conn[2], "#other"),
           "MON_ROOM '#sysop' matches only '#sysop' (case-sensitive)");
     CHECK(!monitor_wants_room(&mon.conn[1], "#sysop"), "MON_PUBLIC ignores rooms");
+    /* rooms/hashtag channels are case-sensitive (distinct keys) - the channel-name
+     * match must be too, or `monitor #sysop` would show an unrelated #SYSOP */
+    CHECK(monitor_wants_public(&mon.conn[2], "#sysop") && !monitor_wants_public(&mon.conn[2], "#SYSOP"),
+          "MON_ROOM channel match is case-sensitive (#sysop != #SYSOP)");
 
     for (int i = 0; i < mon.n; i++) close(mon.conn[i].fd);
     close(pp[0]); close(pp[1]);

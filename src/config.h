@@ -15,7 +15,7 @@
 #include "sx126x.h"
 #include "hal.h"
 
-#define MC_MAX_PUBLIC_CHANNELS 8
+#define MC_MAX_PUBLIC_CHANNELS 16   /* explicit channels + room-derived channels share this */
 #define MC_MAX_BLACKLIST       32
 #define MC_BLACKLIST_NAME_LEN  32
 #define MC_MAX_AFFINITY        16   /* several repeaters in range (redundancy / mesh) */
@@ -32,7 +32,7 @@ typedef enum { ROLE_REPEATER = 0, ROLE_HOTSPOT = 1 } mc_role_t;
 /* A public MeshCore channel the operator has declared forwardable. The AES key
  * is PUBLISHED, so relaying its group messages does not obscure meaning. */
 typedef struct {
-    char     name[24];        /* optional friendly label */
+    char     name[MC_ROOM_NAME_LEN]; /* friendly label; holds a full #room name */
     uint8_t  secret[32];      /* channel PSK, zero-padded (16-byte keys use [0..15]) */
     uint8_t  secret_len;      /* 16 (AES-128) or 32 */
     uint8_t  hash;            /* SHA256(secret, secret_len)[0] = on-air channel selector */

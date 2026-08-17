@@ -284,7 +284,7 @@ static int register_channel(mc_config_t *cfg, const char *name,
 static int add_public_channel(mc_config_t *cfg, const char *val)
 {
     /* optional friendly name before the FIRST ':' */
-    char name[24] = {0};
+    char name[MC_ROOM_NAME_LEN] = {0};
     const char *psk = val;
     const char *colon = strchr(val, ':');
     if (colon) {
@@ -350,7 +350,10 @@ static int add_room(mc_config_t *cfg, const char *val)
     /* A MeshCore hashtag channel uses the SAME key = SHA256("#name")[0..15]. Also
      * register it as a (derived) public channel so we decrypt, forward and monitor
      * its plain-flood group messages - not just match a transport code. */
-    register_channel(cfg, name, digest, 16, true);
+    if (register_channel(cfg, name, digest, 16, true) == -2)
+        log_warn("config: room '%s' added as a region, but the channel list is full "
+                 "(max %d) - its plain-flood messages won't be decrypted/forwarded",
+                 name, MC_MAX_PUBLIC_CHANNELS);
     return 0;
 }
 
