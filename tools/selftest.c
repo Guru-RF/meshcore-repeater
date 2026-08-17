@@ -725,6 +725,18 @@ static void test_rooms(void)
       CHECK(config_set(&rc, "room", at_limit) == 0 && rc.n_rooms == 1, "room name at length limit accepted");
       CHECK(config_set(&rc, "room", over) == -2, "over-long room name rejected (not truncated)"); }
 
+    /* save -> load round-trip: rooms are stored "#ora" but MUST be written as the
+     * bare name, since '#' starts a comment and would be stripped on reload */
+    { mc_config_t rt; config_defaults(&rt);
+      CHECK(config_set(&rt, "room", "#ora") == 0 && strcmp(rt.rooms[0], "#ora") == 0, "room #ora stored with '#'");
+      const char *tmp = "/tmp/mc_rooms_roundtrip.conf";
+      CHECK(config_save(&rt, tmp) == 0, "config_save ok");
+      mc_config_t rl; config_defaults(&rl);
+      config_load(&rl, tmp);
+      CHECK(rl.n_rooms == 1 && strcmp(rl.rooms[0], "#ora") == 0, "room survives save->load round-trip");
+      CHECK(memcmp(rl.room_key[0], rt.room_key[0], 16) == 0, "round-tripped room key matches");
+      remove(tmp); }
+
     mc_identity_t id; mc_identity_generate(&id);
     sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
     uint8_t raw[300]; int n;

@@ -349,9 +349,13 @@ MeshCore has a second, **additive** way to scope forwarding: transport **regions
 **name only**, never a key:
 
 ```
-room = #belgium         # leading '#' optional; added if you omit it
-room = #meshcore
+room = belgium          # BARE name in the config file — '#' starts a comment
+room = meshcore         # here, so the daemon adds it and hashes SHA256("#name")
 ```
+
+(In the config **file** the value must be the bare name; `#` can't appear because
+it starts a comment. Via `meshcore-cli`, `set room belgium` and `set room #belgium`
+both work.)
 
 When a group message arrives as a **`TRANSPORT_FLOOD`** whose `transport_codes[0]`
 matches `HMAC-SHA256(SHA256("#name")[:16], payload_type‖payload)[:2]` for one of

@@ -629,8 +629,11 @@ int config_save(const mc_config_t *cfg, const char *path)
         fprintf(f, "%-18s = %s\n", "affinity", cfg->affinity[i]);
     for (int i = 0; i < cfg->n_home; i++)
         fprintf(f, "%-18s = %s\n", "home", cfg->home[i]);
+    /* emit the BARE name (skip the stored leading '#'): '#' starts a comment in
+     * the config file, so a "room = #x" line would be stripped to empty on load.
+     * add_room re-adds the '#'. */
     for (int i = 0; i < cfg->n_rooms; i++)
-        fprintf(f, "%-18s = %s\n", "room", cfg->rooms[i]);
+        fprintf(f, "%-18s = %s\n", "room", cfg->rooms[i][0] == '#' ? cfg->rooms[i] + 1 : cfg->rooms[i]);
     fclose(f);
     return 0;
 }
