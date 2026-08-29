@@ -214,10 +214,20 @@ int main(int argc, char **argv)
     monitor_init(&monitor);
     mesh.mon = &monitor;
 
-    /* optional split RX/TX over IP */
+    /* optional split RX/TX over IP. A configured link that fails to come up is
+     * fatal: an RX node that silently fell back to a transmitting repeater would
+     * break the "never transmits" safety invariant (systemd restarts + retries,
+     * so a transient boot-time DNS hiccup self-heals). */
     mc_link link;
-    link_init(&link, &cfg);
-    bool rx_node = (link.mode == LINK_RX);   /* a pure remote receiver: no TX */
+    if (link_init(&link, &cfg) != 0) {
+        log_err("link: '%s' mode failed to initialise - refusing to start "
+                "(check link_key / link_peer / link_port)", cfg.link_mode);
+        hal_close();
+        return 1;
+    }
+    /* base this on the CONFIG, not link.mode: a node configured as rx must never
+     * transmit, even if the link is (transiently) down. */
+    bool rx_node = (strcasecmp(cfg.link_mode, "rx") == 0);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);

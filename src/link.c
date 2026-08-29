@@ -18,7 +18,7 @@
 
 #define LINK_VER        1
 #define LINK_HDR        10       /* ver(1) + ts(4) + rssi(2) + snr(1) + len(2) */
-#define LINK_MAC        4
+#define LINK_MAC        8        /* truncated HMAC-SHA256 tag */
 #define LINK_MAX_FRAME  512      /* LoRa frames are <= 255; generous upper bound */
 #define LINK_TS_WINDOW  60       /* seconds: reject stale/replayed datagrams */
 
