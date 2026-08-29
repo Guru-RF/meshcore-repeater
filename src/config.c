@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 
 void config_defaults(mc_config_t *cfg)
 {
@@ -57,6 +58,10 @@ void config_defaults(mc_config_t *cfg)
     snprintf(cfg->ping_channel, sizeof(cfg->ping_channel), "%s", "#mesh"); /* built-in test channel */
     cfg->verbose         = false;      /* set at runtime by the -v flag */
     cfg->control_port    = 4403;       /* local control interface on 127.0.0.1 (0 = off) */
+    snprintf(cfg->link_mode, sizeof(cfg->link_mode), "%s", "off");
+    cfg->link_key[0]     = '\0';
+    cfg->link_peer[0]    = '\0';
+    cfg->link_port       = 4404;       /* split RX/TX UDP link port */
 
     /* APRS-IS RX iGate (off by default; own beacon reuses latitude/longitude) */
     cfg->aprs_enable         = false;
@@ -470,6 +475,15 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
         return 0;
     }
     if (!strcasecmp(key, "control_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->control_port = (uint16_t)u; return 0; }
+    if (!strcasecmp(key, "link_mode")) {
+        if (strcasecmp(val, "off") && strcasecmp(val, "rx") && strcasecmp(val, "tx")) return -2;
+        snprintf(cfg->link_mode, sizeof(cfg->link_mode), "%s", val);
+        for (char *c = cfg->link_mode; *c; c++) *c = (char)tolower((unsigned char)*c);
+        return 0;
+    }
+    if (!strcasecmp(key, "link_key"))  { snprintf(cfg->link_key,  sizeof(cfg->link_key),  "%s", val); return 0; }
+    if (!strcasecmp(key, "link_peer")) { snprintf(cfg->link_peer, sizeof(cfg->link_peer), "%s", val); return 0; }
+    if (!strcasecmp(key, "link_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->link_port = (uint16_t)u; return 0; }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
     if (!strcasecmp(key, "room"))           { return add_room(cfg, val); }
     if (!strcasecmp(key, "blacklist")) { return config_blacklist_add(cfg, val) < 0 ? -2 : 0; }
@@ -546,6 +560,10 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_channel"))     { snprintf(out, outsz, "%s", cfg->ping_channel[0] ? cfg->ping_channel : "any"); return 0; }
     if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
+    if (!strcasecmp(key, "link_mode"))        { snprintf(out, outsz, "%s", cfg->link_mode); return 0; }
+    if (!strcasecmp(key, "link_key"))         { snprintf(out, outsz, "%s", cfg->link_key[0] ? "set" : ""); return 0; }
+    if (!strcasecmp(key, "link_peer"))        { snprintf(out, outsz, "%s", cfg->link_peer); return 0; }
+    if (!strcasecmp(key, "link_port"))        { snprintf(out, outsz, "%u", cfg->link_port); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     if (!strcasecmp(key, "room"))             { snprintf(out, outsz, "%d configured", cfg->n_rooms); return 0; }
     if (!strcasecmp(key, "blacklist"))        { snprintf(out, outsz, "%d entries", cfg->n_blacklist); return 0; }
@@ -674,7 +692,8 @@ int config_save(const mc_config_t *cfg, const char *path)
         "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
         "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",
-        "role", "hotspot_power_high", "hotspot_power_low", NULL
+        "role", "hotspot_power_high", "hotspot_power_low",
+        "link_mode", "link_peer", "link_port", NULL   /* link_key emitted below */
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {
@@ -686,6 +705,9 @@ int config_save(const mc_config_t *cfg, const char *path)
     fprintf(f, "%-18s = %s\n", "ping_channel",
             cfg->ping_channel[0] == '\0' ? "any" :
             (cfg->ping_channel[0] == '#' ? cfg->ping_channel + 1 : cfg->ping_channel));
+    /* link_key: the real secret (config_get masks it, so it is not in KEYS[]) */
+    if (cfg->link_key[0])
+        fprintf(f, "%-18s = %s\n", "link_key", cfg->link_key);
     /* public_channel is a repeatable list; emit one line each (hex form, so no
      * base64 encoder is needed - it round-trips through hex2bin on load). */
     for (int i = 0; i < cfg->n_public_channels; i++) {

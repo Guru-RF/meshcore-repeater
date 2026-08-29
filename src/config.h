@@ -102,6 +102,16 @@ typedef struct {
     int      n_blacklist;
     uint16_t control_port;       /* TCP 127.0.0.1 control port (0 = disabled) */
 
+    /* ---- split RX/TX over IP (optional; default single-node) ----
+     * rx: this node only receives and relays each frame (+ its rssi/snr) over UDP
+     *     to the tx node; it never transmits. tx: this node listens for relayed
+     *     frames from one or more rx nodes, injects them into the mesh, and does
+     *     all the forwarding/TX. Datagrams are HMAC-authenticated with link_key. */
+    char     link_mode[8];       /* "off" | "rx" | "tx" */
+    char     link_key[64];       /* shared secret; HMAC key = SHA256(this) */
+    char     link_peer[64];      /* rx mode: TX-node host to relay frames to */
+    uint16_t link_port;          /* UDP port (default 4404) */
+
     /* ---- APRS-IS RX iGate: gate adverts-with-coordinates to APRS-IS ---- */
     bool     aprs_enable;
     char     aprs_call[16];      /* login + own-beacon source SSID call (e.g. ON6URE-6) */

@@ -14,6 +14,7 @@
 #include "util.h"
 #include "aprsis.h"
 #include "monitor.h"
+#include "link.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,13 +214,18 @@ int main(int argc, char **argv)
     monitor_init(&monitor);
     mesh.mon = &monitor;
 
+    /* optional split RX/TX over IP */
+    mc_link link;
+    link_init(&link, &cfg);
+    bool rx_node = (link.mode == LINK_RX);   /* a pure remote receiver: no TX */
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
 
     bool running = true;
     cli_ctx_t ctx = {
-        .cfg = &cfg, .mesh = &mesh, .id = &id,
+        .cfg = &cfg, .mesh = &mesh, .id = &id, .link = &link,
         .config_path = config_path, .radio_ready = true, .running = &running,
     };
     cli_banner(&ctx);
@@ -228,7 +234,7 @@ int main(int argc, char **argv)
 
     /* fire an initial advert shortly after start */
     uint64_t last_advert = hal_millis();
-    if (cfg.advert_interval)
+    if (!rx_node && cfg.advert_interval)
         mesh_send_advert(&mesh);
 
     int ctrl_fd = control_listen(cfg.control_port);
@@ -251,20 +257,35 @@ int main(int argc, char **argv)
         int r = sx126x_poll_rx(buf, sizeof(buf), &rlen, &rssi, &snr);
         if (r == 1) {
             log_debug("rx %zu bytes  rssi=%d snr=%.2f", rlen, rssi, snr / 4.0);
-            mesh_on_recv(&mesh, buf, rlen, rssi, snr);
+            if (rx_node)
+                link_relay(&link, buf, rlen, rssi, snr);   /* remote ear -> TX node */
+            else
+                mesh_on_recv(&mesh, buf, rlen, rssi, snr);
             activity = true;
         }
 
-        /* 2. transmit due packets */
-        mesh_service_tx(&mesh, now);
-        mesh_service_probe(&mesh, now);
+        /* 1b. inject frames relayed from remote RX nodes (TX node only) */
+        if (link.mode == LINK_TX) {
+            uint8_t lb[MC_MAX_TRANS_UNIT];
+            size_t llen; int16_t lrssi; int8_t lsnr;
+            while (link_recv(&link, lb, sizeof(lb), &llen, &lrssi, &lsnr) == 1) {
+                mesh_on_recv(&mesh, lb, llen, lrssi, lsnr);
+                activity = true;
+            }
+        }
+
+        /* 2. transmit due packets (a pure RX node never transmits) */
+        if (!rx_node) {
+            mesh_service_tx(&mesh, now);
+            mesh_service_probe(&mesh, now);
+        }
         if (mesh.stats.tx_total != prev_tx) {
             prev_tx = mesh.stats.tx_total;
             activity = true;
         }
 
-        /* 3. periodic advert */
-        if (cfg.advert_interval &&
+        /* 3. periodic advert (not on a pure RX node) */
+        if (!rx_node && cfg.advert_interval &&
             now - last_advert >= (uint64_t)cfg.advert_interval * 1000ull) {
             mesh_send_advert(&mesh);
             last_advert = now;
@@ -279,8 +300,8 @@ int main(int argc, char **argv)
             data_led_off = 0;
         }
 
-        /* 4. local CLI + control socket + APRS-IS + monitors (all non-blocking) */
-        struct pollfd pfd[3 + MC_MAX_MONITORS];
+        /* 4. local CLI + control socket + APRS-IS + monitors + IP link (non-blocking) */
+        struct pollfd pfd[4 + MC_MAX_MONITORS];
         int nfds = 0;
         int stdin_slot = -1, ctrl_slot = -1, aprs_slot = -1;
         short aprs_ev = 0;
@@ -288,6 +309,8 @@ int main(int argc, char **argv)
         if (stdin_open) { stdin_slot = nfds; pfd[nfds].fd = STDIN_FILENO; pfd[nfds].events = POLLIN; nfds++; }
         if (ctrl_fd >= 0) { ctrl_slot = nfds; pfd[nfds].fd = ctrl_fd; pfd[nfds].events = POLLIN; nfds++; }
         if (aprs_fd >= 0) { aprs_slot = nfds; pfd[nfds].fd = aprs_fd; pfd[nfds].events = aprs_ev; nfds++; }
+        int link_fd = link_pollfd(&link);
+        if (link_fd >= 0) { pfd[nfds].fd = link_fd; pfd[nfds].events = POLLIN; nfds++; }  /* wakes on relayed frames */
         int mon_slot = nfds;
         int mon_count = monitor_pollfds(&monitor, &pfd[nfds], MC_MAX_MONITORS);
         nfds += mon_count;
@@ -313,6 +336,7 @@ int main(int argc, char **argv)
         close(ctrl_fd);
     if (mesh.aprs)
         aprsis_close(mesh.aprs);
+    link_close(&link);
 
     log_info("shutting down");
     hal_led_data(false);

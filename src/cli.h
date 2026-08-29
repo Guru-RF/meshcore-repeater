@@ -12,11 +12,13 @@
 #include "config.h"
 #include "mesh.h"
 #include "identity.h"
+#include "link.h"
 
 typedef struct {
     mc_config_t   *cfg;
     mc_mesh_t     *mesh;
     mc_identity_t *id;
+    struct mc_link *link;        /* split RX/TX link, or NULL */
     const char    *config_path;
     bool           radio_ready;  /* false during self-test / before radio init */
     bool          *running;      /* set to false on quit */

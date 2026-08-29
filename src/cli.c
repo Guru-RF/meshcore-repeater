@@ -122,6 +122,16 @@ static void cmd_status(cli_ctx_t *ctx)
     printf("probe     : allow %d  sent %llu%s\n",
            ctx->cfg->n_probe_allow, (unsigned long long)s->probes_sent,
            ctx->mesh->probe_remaining > 0 ? "  (active)" : "");
+    if (ctx->link && ctx->link->mode != LINK_OFF) {
+        if (ctx->link->mode == LINK_RX)
+            printf("link      : RX node -> %s:%u  relayed %llu frames\n",
+                   ctx->cfg->link_peer, ctx->cfg->link_port,
+                   (unsigned long long)ctx->link->frames_out);
+        else
+            printf("link      : TX node  udp/%u  injected %llu  rejected %llu\n",
+                   ctx->cfg->link_port, (unsigned long long)ctx->link->frames_in,
+                   (unsigned long long)ctx->link->frames_bad);
+    }
     printf("blacklist : %d entries  ignored %llu   control port %u\n",
            ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
     if (ctx->cfg->role == ROLE_HOTSPOT)

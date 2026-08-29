@@ -19,6 +19,7 @@
 #include "../src/crypto/sha256.h"
 #include "../src/crypto/aes128.h"
 #include "../src/monitor.h"
+#include "../src/link.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -522,6 +523,54 @@ static void test_probe(void)
       remove(tmp); }
 }
 
+static void test_link(void)
+{
+    printf("[split RX/TX link: HMAC-authenticated UDP relay]\n");
+    uint16_t port = (uint16_t)(45400 + (getpid() % 120));
+
+    mc_config_t txcfg; config_defaults(&txcfg);
+    config_set(&txcfg, "link_mode", "tx"); config_set(&txcfg, "link_key", "s3cret");
+    txcfg.link_port = port;
+    mc_link tx;
+    CHECK(link_init(&tx, &txcfg) == 0 && tx.mode == LINK_TX, "tx link binds udp port");
+
+    mc_config_t rxcfg; config_defaults(&rxcfg);
+    config_set(&rxcfg, "link_mode", "rx"); config_set(&rxcfg, "link_key", "s3cret");
+    config_set(&rxcfg, "link_peer", "127.0.0.1"); rxcfg.link_port = port;
+    mc_link rx;
+    CHECK(link_init(&rx, &rxcfg) == 0 && rx.mode == LINK_RX, "rx link resolves peer");
+
+    CHECK(link_init(&(mc_link){0}, &(mc_config_t){0}) == 0, "off-mode link is a no-op");
+
+    uint8_t frame[19]; for (int i = 0; i < 19; i++) frame[i] = (uint8_t)(0xA0 + i);
+    uint8_t got[MC_MAX_TRANS_UNIT]; size_t glen = 0; int16_t grssi = 0; int8_t gsnr = 0;
+
+    /* relay a frame; the tx side receives + authenticates it (poll loopback) */
+    link_relay(&rx, frame, sizeof(frame), -73, 28);
+    int n = 0;
+    for (int t = 0; t < 100 && n == 0; t++) { n = link_recv(&tx, got, sizeof(got), &glen, &grssi, &gsnr); if (!n) usleep(2000); }
+    CHECK(n == 1 && glen == 19 && memcmp(got, frame, 19) == 0 && grssi == -73 && gsnr == 28,
+          "frame + rssi/snr relayed and authenticated");
+    CHECK(rx.frames_out == 1 && tx.frames_in == 1, "link stats counted");
+
+    /* a datagram signed with the WRONG key is rejected, not injected */
+    mc_config_t badcfg; config_defaults(&badcfg);
+    config_set(&badcfg, "link_mode", "rx"); config_set(&badcfg, "link_key", "wrong-key");
+    config_set(&badcfg, "link_peer", "127.0.0.1"); badcfg.link_port = port;
+    mc_link bad; link_init(&bad, &badcfg);
+    uint64_t bad0 = tx.frames_bad, in0 = tx.frames_in;
+    link_relay(&bad, frame, sizeof(frame), -73, 28);
+    for (int t = 0; t < 100 && tx.frames_bad == bad0; t++) { link_recv(&tx, got, sizeof(got), &glen, &grssi, &gsnr); usleep(2000); }
+    CHECK(tx.frames_bad == bad0 + 1 && tx.frames_in == in0, "wrong-key datagram rejected (not injected)");
+
+    /* a missing key is a hard misconfiguration (mode forced off) */
+    mc_config_t nk; config_defaults(&nk); config_set(&nk, "link_mode", "tx");
+    mc_link no_key;
+    CHECK(link_init(&no_key, &nk) == -1 && no_key.mode == LINK_OFF, "link_mode without link_key -> off");
+
+    link_close(&tx); link_close(&rx); link_close(&bad);
+}
+
 static void test_blacklist(void)
 {
     printf("[blacklist / moderation]\n");
@@ -1014,6 +1063,7 @@ int main(void)
     test_ping_pong();
     test_ping_channel();
     test_probe();
+    test_link();
     test_blacklist();
     test_aprs();
     test_hotspot();

@@ -567,6 +567,54 @@ daemon logs a warning if a repeater name carries an SSID (or a hotspot SSID is n
 
 ---
 
+## Split RX / TX over IP
+
+Optionally separate the **receiver(s)** from the **transmitter**. The biggest thing
+deafening a repeater's own RX is its own 1–2 W TX; putting them on different boards
+(and ideally different sites) removes that self-desense, and lets you site the RX
+somewhere quiet/high with an LNA front-end while the TX lives where power and
+antenna are convenient. It's **off by default** (single node).
+
+- **`link_mode = rx`** — a remote *ear*. It only receives, and relays each frame —
+  plus the **RSSI/SNR it measured** — to the TX node over UDP. It never transmits
+  and never needs the channel keys.
+- **`link_mode = tx`** — the *brain*. It listens for relayed frames from **one or
+  more** RX nodes, authenticates each, and injects it into the normal receive path,
+  so its dedup ring merges every ear (and its own radio, if it has one) and it does
+  all the forwarding and transmitting.
+
+```
+rx-node ─┐
+rx-node ─┼── UDP (HMAC) ──▶ tx-node ──▶ on-air
+rx-node ─┘
+```
+
+Each datagram is **HMAC-SHA256 authenticated** with a shared `link_key` and carries
+a timestamp (a stale/replayed one is dropped). This is **required** — the link
+injects frames your licensed station will transmit, so an open port would let anyone
+key your repeater. Same `link_key` and `link_port` on every node; RX nodes also set
+`link_peer` to the TX node's host:
+
+```
+# on the TX node
+link_mode = tx
+link_key  = <shared secret>
+link_port = 4404
+
+# on each RX node
+link_mode = rx
+link_key  = <shared secret>
+link_peer = 192.168.1.10
+link_port = 4404
+```
+
+`meshcore-cli status` shows a `link` line (relayed / injected / rejected counts).
+The transport is **UDP** — a dropped frame just looks like a missed reception, which
+the mesh already tolerates. (Clocks should be roughly in sync — NTP — for the
+replay window.)
+
+---
+
 ## Frequency / legal notes
 
 - The defaults follow the
