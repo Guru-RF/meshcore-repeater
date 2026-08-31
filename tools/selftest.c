@@ -650,6 +650,194 @@ static void test_aprs(void)
 
 static int first_used(mc_mesh_t *m) { for (int i = 0; i < MESH_TXQ_SIZE; i++) if (m->txq[i].used) return i; return -1; }
 static int grp_slot(mc_mesh_t *m) { int s = -1; for (int i = 0; i < MESH_TXQ_SIZE; i++) if (m->txq[i].used && pkt_payload_type(&m->txq[i].pkt) == PAYLOAD_TYPE_GRP_TXT) s = i; return s; }
+/* last enqueued GRP_TXT sent as a routed DIRECT packet (an mbox reply) */
+static int direct_grp_slot(mc_mesh_t *m)
+{
+    int s = -1;
+    for (int i = 0; i < MESH_TXQ_SIZE; i++) {
+        mc_packet_t *q = &m->txq[i].pkt;
+        if (m->txq[i].used && pkt_payload_type(q) == PAYLOAD_TYPE_GRP_TXT
+            && pkt_route_type(q) == ROUTE_TYPE_DIRECT)
+            s = i;
+    }
+    return s;
+}
+
+/* Decrypt an enqueued public GRP_TXT's "sender: text" into out (NUL-terminated). */
+static void decrypt_grp(const mc_pub_channel_t *ch, const mc_packet_t *q, char *out, size_t outsz)
+{
+    size_t ctl = (size_t)q->payload_len - 3;
+    uint8_t dec[128]; if (ctl > sizeof(dec)) ctl = sizeof(dec);
+    memcpy(dec, &q->payload[3], ctl);
+    aes128_ctx_t ac; aes128_init(&ac, ch->secret);
+    aes128_ecb_decrypt(&ac, dec, ctl);
+    size_t body = ctl > 5 ? ctl - 5 : 0;
+    if (body >= outsz) body = outsz - 1;
+    memcpy(out, &dec[5], body); out[body] = '\0';
+}
+
+static void test_mbox(void)
+{
+    printf("[#mbox mailbox: store @mentions, route fetch/help replies back]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    uint8_t raw[MC_MAX_TRANS_UNIT]; int n;
+
+    /* --- unit: classify --- */
+    { char ment[MC_MBOX_CALL]; const char *msg = NULL;
+      CHECK(mbox_classify("@ON4ABC hello there", ment, sizeof(ment), &msg) == MBOX_MENTION
+            && strcmp(ment, "ON4ABC") == 0 && strcmp(msg, "hello there") == 0, "classify @mention");
+      CHECK(mbox_classify("fetch", ment, sizeof(ment), &msg) == MBOX_FETCH, "classify fetch");
+      CHECK(mbox_classify("  fetch  ", ment, sizeof(ment), &msg) == MBOX_FETCH, "classify fetch (whitespace)");
+      CHECK(mbox_classify("@ON4ABC", ment, sizeof(ment), &msg) == MBOX_OTHER, "@mention needs text -> other");
+      CHECK(mbox_classify("hello", ment, sizeof(ment), &msg) == MBOX_OTHER, "plain text -> other (help)"); }
+
+    /* --- unit: store + fetch format (base-call, SSID- and case-insensitive, oldest first) --- */
+    { mc_mbox mb; mbox_init(&mb);
+      mbox_store(&mb, "ON4ABC", "OR7F-1", "see you at 8", 1000);
+      mbox_store(&mb, "ON4XYZ", "OR7F-1", "not for abc", 1001);
+      mbox_store(&mb, "on4abc-5", "K1ABC", "second one", 1002);
+      char out[160];
+      int total = -1;
+      int c = mbox_format_fetch(&mb, "ON4ABC-9", out, sizeof(out), &total);
+      CHECK(c == 2 && total == 2 && strstr(out, "[OR7F-1] see you at 8") && strstr(out, "[K1ABC] second one")
+            && !strstr(out, "not for abc"), "fetch matches base call (SSID/case-insensitive)");
+      CHECK(mbox_format_fetch(&mb, "ON0NON", out, sizeof(out), &total) == 0 && total == 0,
+            "fetch with no match -> 0 shown, 0 total");
+
+      /* a buffer that holds exactly one entry: shown(1) < total(2), and the second
+       * (overflowing) entry is backed out whole - never truncated mid-message */
+      char small[30];
+      int st = -1;
+      int sh = mbox_format_fetch(&mb, "ON4ABC", small, sizeof(small), &st);
+      CHECK(st == 2 && sh == 1, "buffer full -> shown(1) < total(2), honest count");
+      CHECK(strstr(small, "see you at 8") && !strstr(small, "second one"),
+            "only the whole first entry is written, the overflow is backed out (got '%s')", small); }
+
+    /* --- runtime `set mbox on` must register the #mbox channel (no reload) --- */
+    { mc_config_t c; config_defaults(&c);
+      config_set(&c, "mbox", "on");
+      int has = 0;
+      for (int i = 0; i < c.n_public_channels; i++)
+          if (strcmp(c.public_channels[i].name, "#mbox") == 0) has = 1;
+      CHECK(c.mbox_enable && has, "set mbox on registers #mbox immediately (runtime toggle works)"); }
+
+    /* --- integration on the REPEATER --- */
+    mc_config_t cfg; config_defaults(&cfg);
+    config_set(&cfg, "name", "ON0RPT");
+    config_set(&cfg, "room", "mbox");        /* #mbox derived channel = public_channels[0] */
+    config_set(&cfg, "mbox", "on");
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    const mc_pub_channel_t *mbch = &cfg.public_channels[0];
+    CHECK(strcmp(mbch->name, "#mbox") == 0 && cfg.mbox_enable, "#mbox registered + mailbox enabled");
+
+    /* 1. an @mention is stored AND still floods to the network */
+    mc_mesh_t m; mesh_init(&m, &id, &cfg);
+    { mc_packet_t p; build_public_text(&cfg, "OR7F-1: @ON4ABC ping me back", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.stats.mbox_stored == 1 && m.mbox.count == 1, "@mention stored");
+      CHECK(m.stats.fwd_grp_public == 1 && m.stats.fwd_flood == 1, "@mention still floods to the network");
+      CHECK(direct_grp_slot(&m) < 0, "no reply is sent for an @mention"); }
+
+    /* 2. a directly-heard "fetch" -> a zero-hop reply carrying the mailbox; NOT re-flooded */
+    { uint64_t flood0 = m.stats.fwd_flood;
+      mc_packet_t f; build_public_text(&cfg, "ON4ABC-9: fetch", &f);
+      n = pkt_serialize(&f, raw, sizeof(raw));
+      mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.stats.mbox_replies == 1, "fetch -> one reply");
+      CHECK(m.stats.fwd_flood == flood0, "the fetch command is NOT re-flooded");
+      int s = direct_grp_slot(&m);
+      CHECK(s >= 0, "reply enqueued as a routed DIRECT packet");
+      if (s >= 0) {
+          mc_packet_t *q = &m.txq[s].pkt;
+          CHECK(pkt_route_type(q) == ROUTE_TYPE_DIRECT && pkt_path_hash_count(q) == 0,
+                "reply to a directly-heard fetch is a zero-hop DIRECT packet");
+          char body[128]; decrypt_grp(mbch, q, body, sizeof(body));
+          CHECK(strstr(body, "mbox 1: [OR7F-1] ping me back") != NULL,
+                "reply carries the fetcher's mailbox (got '%s')", body); } }
+
+    /* 2b. a nameless command (plaintext has no "sender: " prefix -> sender "") is NOT
+     *     answered: an empty sender must not bypass the per-sender rate gate */
+    { mc_mesh_t mn; mesh_init(&mn, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "fetch", &p);   /* no "name: " -> sender "" */
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&mn, raw, (size_t)n, -60, 24);
+      CHECK(mn.stats.mbox_replies == 0 && direct_grp_slot(&mn) < 0,
+            "a nameless fetch is not answered (empty sender can't bypass the gate)"); }
+
+    /* 3. reverse-path routing: a fetch that arrived via hops [A(near source), B(near us)]
+     *    is answered along the reverse [B, A] (path[0] = the hop closest to us) */
+    { mc_mesh_t m2; mesh_init(&m2, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "OR7F-1: @ON4ABC hi", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m2, raw, (size_t)n, -60, 24);
+      mc_packet_t f; build_public_text(&cfg, "ON4ABC-9: fetch", &f);
+      f.path_len = 0x02; f.path[0] = 0xA1; f.path[1] = 0xB2;   /* [H1=A1, H2=B2] */
+      n = pkt_serialize(&f, raw, sizeof(raw)); mesh_on_recv(&m2, raw, (size_t)n, -60, 24);
+      int s = direct_grp_slot(&m2);
+      CHECK(s >= 0, "routed reply enqueued");
+      if (s >= 0) {
+          mc_packet_t *q = &m2.txq[s].pkt;
+          CHECK(pkt_path_hash_count(q) == 2 && q->path[0] == 0xB2 && q->path[1] == 0xA1,
+                "reply path is the reverse of the fetch path (path[0]=closest hop)"); } }
+
+    /* 3b. a DIRECT reply passing THROUGH a repeater is forwarded, never treated as
+     *     a command (else a second mbox repeater would "help"-reply to it) */
+    { mc_mesh_t m3; mesh_init(&m3, &id, &cfg);
+      mc_packet_t rep; build_public_text(&cfg, "ON0OTH: mbox 1: [OR7F-1] hi", &rep);
+      rep.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_DIRECT);
+      rep.path_len = 0x01; rep.path[0] = id.pub[0];   /* routed through us */
+      n = pkt_serialize(&rep, raw, sizeof(raw));
+      mesh_on_recv(&m3, raw, (size_t)n, -60, 24);
+      CHECK(m3.stats.mbox_replies == 0 && m3.stats.mbox_stored == 0,
+            "a routed DIRECT #mbox reply is forwarded, not answered as a command");
+      CHECK(m3.stats.fwd_direct == 1, "the routed reply is forwarded on"); }
+
+    /* 4. a HOTSPOT does not run the mailbox: it forwards #mbox UP to the repeater */
+    mc_config_t hc; config_defaults(&hc);
+    config_set(&hc, "name", "ON0HOT");
+    config_set(&hc, "role", "hotspot");
+    config_set(&hc, "affinity", "ON0RPT");   /* the repeater we bridge to (owns the mailbox) */
+    config_set(&hc, "home", "ON4ABC*");
+    config_set(&hc, "hotspot_power_high", "10");
+    config_set(&hc, "hotspot_power_low", "-5");
+    config_set(&hc, "room", "mbox");
+    config_set(&hc, "mbox", "on");
+    config_to_sx126x(&hc, &radio); sx126x_init(&radio);
+    { mc_mesh_t hm; mesh_init(&hm, &id, &hc);
+      mc_packet_t f; build_public_text(&hc, "ON4ABC-9: fetch", &f);
+      n = pkt_serialize(&f, raw, sizeof(raw)); mesh_on_recv(&hm, raw, (size_t)n, -50, 40);
+      CHECK(hm.stats.mbox_stored == 0 && hm.stats.mbox_replies == 0,
+            "hotspot neither stores nor answers #mbox locally");
+      int s = grp_slot(&hm);
+      CHECK(hm.stats.fwd_flood == 1 && s >= 0 && hm.txq[s].power_dbm == 10,
+            "hotspot forwards the fetch UP to the repeater (uplink, high power)");
+
+      /* 5. the repeater's DIRECT reply routes back DOWN through the hotspot to the
+       *    household device: path[0] = the hotspot's own hash -> stripped, low power */
+      mc_packet_t rep; build_public_text(&hc, "ON0RPT: mbox 1: [OR7F-1] hi", &rep);
+      rep.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_DIRECT);
+      rep.path_len = 0x01; rep.path[0] = id.pub[0];   /* addressed to this hotspot */
+      n = pkt_serialize(&rep, raw, sizeof(raw));
+      uint64_t fd0 = hm.stats.fwd_direct;
+      mesh_on_recv(&hm, raw, (size_t)n, -50, 40);
+      int ds = direct_grp_slot(&hm);
+      CHECK(hm.stats.fwd_direct == fd0 + 1 && ds >= 0,
+            "hotspot ROUTES the DIRECT reply back (not dropped by personal scope)");
+      if (ds >= 0) {
+          CHECK(pkt_path_hash_count(&hm.txq[ds].pkt) == 0,
+                "hotspot stripped itself -> zero-hop to the household device");
+          CHECK(hm.txq[ds].power_dbm == -5, "reply relayed at low last-mile downlink power"); }
+
+      /* 6. a STRANGER's crafted DIRECT public packet addressed to the hotspot is NOT
+       *    relayed - only affinity-repeater replies / home-device traffic pass scope */
+      mc_packet_t ev; build_public_text(&hc, "ON9EVL: free relay pls", &ev);
+      ev.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_DIRECT);
+      ev.path_len = 0x02; ev.path[0] = id.pub[0]; ev.path[1] = 0x5c;  /* addressed to us -> a target */
+      n = pkt_serialize(&ev, raw, sizeof(raw));
+      uint64_t fd1 = hm.stats.fwd_direct;
+      mesh_on_recv(&hm, raw, (size_t)n, -50, 40);
+      CHECK(hm.stats.fwd_direct == fd1,
+            "hotspot drops a stranger's DIRECT public packet (no free relay hop)"); }
+}
 
 static void test_hotspot(void)
 {
@@ -1063,6 +1251,7 @@ int main(void)
     test_ping_pong();
     test_ping_channel();
     test_probe();
+    test_mbox();
     test_link();
     test_blacklist();
     test_aprs();

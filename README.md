@@ -25,7 +25,8 @@ Under the hood:
   with stock MeshCore nodes;
 - **Ed25519-signed adverts** (TweetNaCl) for path discovery;
 - strict **public-only forwarding** with configurable public channels, **ping/pong**,
-  a **blacklist**, and a local **`meshcore-cli`** control interface;
+  a **blacklist**, an optional **`#mbox`** store-and-forward mailbox, and a local
+  **`meshcore-cli`** control interface;
 - a **fully runtime-configurable radio** (frequency, SF, BW, CR, power, sync word)
   via a config file and CLI — no recompile to retune.
 
@@ -301,6 +302,7 @@ the repeater joins that network out of the box:
 | `ping_pong` | `true` | answer `ping` with `pong` (a liveness test) |
 | `ping_channel` | `mesh` | channel ping/pong answers on; `any` = every channel |
 | `probe_allow` | *(none)* | callsign pattern(s) allowed to run `probe` (repeatable; empty = off) |
+| `mbox` | `true` | `#mbox` store-and-forward mailbox (set `false` to disable) — see below |
 | `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
 
 > To interoperate with the mesh, **`frequency`, `bandwidth`, `spreading_factor`,
@@ -407,6 +409,37 @@ without the allow-list from the repeater side: `meshcore-cli probe <secs> <count
 probe_allow = ON6URE*      # who may run it (repeatable; empty = nobody)
 probe_allow = OR7F*
 ```
+
+### `#mbox` mailbox
+
+The repeater runs a small **store-and-forward mailbox** on the built-in
+**`#mbox`** hashtag channel (key derived from the name like any
+[room](#hashtag-rooms--channels), auto-added). It is **on by default** — set
+`mbox = false` to disable. On `#mbox`:
+
+- **`@CALL text`** — leaves a message for `CALL`. It is **stored on the repeater
+  and also flooded** normally, so `CALL` still gets it live if they are on the mesh.
+- **`fetch`** — the repeater replies with the messages left for the **sender's**
+  callsign, sent **back to them only** (never flooded). Matched on the *base* call,
+  so any SSID (`-1`, `-7`, …) collects the same mailbox.
+- **anything else** — a one-line help reply, also just to the sender.
+
+```
+mbox = true
+```
+
+The mailbox lives on the **repeater**. Fetch/help replies are **routed back along
+the reverse of the path the request took** — a `DIRECT` packet hop-by-hop to the
+requester — so they reach the sender (through any intermediate node) without
+flooding the mesh; a request heard directly gets a zero-hop local reply.
+
+Through a **hotspot** it still works end-to-end: a hotspot **stores nothing**, it
+just forwards `#mbox` **up** to the repeater and **routes the reply back down** to
+your household device. For that, on the hotspot: put your device in the `home`
+list, keep the mailbox repeater in `affinity` (as you already do to bridge to it —
+that's how the reply is recognized as a downlink), and set `mbox = true` so it
+forwards the channel. Since it is a public channel, keep `#mbox` to non-obscured
+(ham-legal) use.
 
 ### Verbose (`-v`)
 

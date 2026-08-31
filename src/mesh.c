@@ -8,6 +8,7 @@
 #include "hmac_sha256.h"
 #include "aprsis.h"
 #include "monitor.h"
+#include "mbox.h"
 #include "crypto/aes128.h"
 
 #include <ctype.h>
@@ -21,6 +22,7 @@ void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg)
     m->id = id;
     m->cfg = cfg;
     m->start_ms = hal_millis();
+    mbox_init(&m->mbox);
 }
 
 /* Returns true if hash was already present; otherwise records it. */
@@ -140,6 +142,15 @@ static bool hotspot_decide(mc_mesh_t *m, const mc_packet_t *pkt,
         return false;                                  /* not our repeater or device */
     }
     if (path_has_affinity(m, pkt)) {                   /* came via a repeater -> downlink */
+        *power = m->cfg->hotspot_power_low;
+        return true;
+    }
+    /* A group message whose SENDER is an affinity repeater is that repeater's own
+     * traffic (a pong/probe, or an mbox fetch reply routed back to us as a DIRECT
+     * packet whose path holds only the downstream hops, not the repeater's hash)
+     * -> downlink. This is what lets a routed reply reach a household device while
+     * still dropping a stranger's DIRECT packet (whose sender is neither ours). */
+    if (pt == PAYLOAD_TYPE_GRP_TXT && config_is_affinity(m->cfg, grp_sender)) {
         *power = m->cfg->hotspot_power_low;
         return true;
     }
@@ -361,7 +372,8 @@ static bool is_probe(const char *msg, int *secs, int *count)
 
 /* Build an encrypted public GRP_TXT carrying "sender: text". Returns 0 on ok. */
 static int channel_build_txt(const mc_pub_channel_t *ch, const char *sender,
-                             const char *text, uint32_t ts, mc_packet_t *pkt)
+                             const char *text, uint32_t ts, uint8_t route_type,
+                             mc_packet_t *pkt)
 {
     uint8_t plain[MC_MAX_PACKET_PAYLOAD];
     size_t i = 0;
@@ -383,8 +395,8 @@ static int channel_build_txt(const mc_pub_channel_t *ch, const char *sender,
     aes128_ecb_encrypt(&ac, plain, ctlen);
 
     memset(pkt, 0, sizeof(*pkt));
-    pkt->header   = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, ROUTE_TYPE_FLOOD);
-    pkt->path_len = 0;                                 /* fresh flood, 1-byte hash size */
+    pkt->header   = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_GRP_TXT, route_type);
+    pkt->path_len = 0;                                 /* empty path (FLOOD: fresh; DIRECT: zero-hop/local) */
     pkt->payload[0] = ch->hash;
     uint8_t mac[32];
     hmac_sha256(ch->secret, sizeof(ch->secret), plain, ctlen, mac);
@@ -402,7 +414,7 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     snprintf(txt, sizeof(txt), "pong rssi %ddBm snr %.1fdB", rssi, snr_q / 4.0);
 
     mc_packet_t pkt;
-    if (channel_build_txt(ch, m->cfg->name, txt, (uint32_t)time(NULL), &pkt) != 0)
+    if (channel_build_txt(ch, m->cfg->name, txt, (uint32_t)time(NULL), ROUTE_TYPE_FLOOD, &pkt) != 0)
         return;
     /* record our own message so its echo is treated as a duplicate */
     uint8_t hash[MC_MAX_HASH_SIZE];
@@ -412,6 +424,110 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
+}
+
+#define MBOX_REPLY_COOLDOWN_MS  8000   /* min gap between local mbox replies (anti-spam) */
+
+/* Reply to a command by routing a DIRECT group message back along the REVERSE of
+ * the path the command took, so it reaches the sender through any intermediate
+ * hops (e.g. a personal hotspot) WITHOUT flooding the mesh. A command heard
+ * directly (empty path) gets a zero-hop reply that only direct-range nodes see.
+ *
+ * Verified vs MeshCore: a flood appends each forwarder's hash at the BACK, so a
+ * command arrives with path [H1..Hk] (H1 = first forwarder nearest the source,
+ * Hk = last forwarder nearest us). A DIRECT packet is consumed front-first
+ * (path[0] = next hop, stripped on forward), so to travel us->Hk->..->H1->source
+ * the reply's path must be the reverse [Hk..H1], with path[0] = Hk. */
+static bool send_routed_reply(mc_mesh_t *m, const mc_packet_t *rx,
+                              const mc_pub_channel_t *ch, const char *text)
+{
+    mc_packet_t pkt;
+    if (channel_build_txt(ch, m->cfg->name, text, (uint32_t)time(NULL), ROUTE_TYPE_DIRECT, &pkt) != 0)
+        return false;                     /* too long to encode -> tell the caller nothing went out */
+
+    uint8_t n  = pkt_path_hash_count(rx);
+    uint8_t hs = pkt_path_hash_size(rx);
+    if (n > 0 && (uint16_t)(n * hs) <= MC_MAX_PATH_SIZE) {
+        for (uint8_t i = 0; i < n; i++)                 /* reverse: path[0] = the hop closest to us */
+            memcpy(&pkt.path[i * hs], &rx->path[(size_t)(n - 1 - i) * hs], hs);
+        pkt.path_len = (uint8_t)((((hs - 1) & 0x03) << 6) | (n & 0x3F));
+    }
+
+    uint8_t hash[MC_MAX_HASH_SIZE];
+    pkt_calc_hash(&pkt, hash);
+    seen_check_and_add(m, hash);          /* seed dedup so we don't display/re-forward our own echo */
+    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+    return true;
+}
+
+/* Per-sender reply rate-limit: at most one #mbox reply per base call per cooldown,
+ * so a chatty/hostile station can't starve everyone else's fetch. Records the gate
+ * and returns true when a reply is allowed now; false while still cooling down. */
+static bool mbox_rate_ok(mc_mesh_t *m, const char *sender, uint64_t now)
+{
+    char base[MC_MBOX_CALL];
+    size_t i = 0;
+    while (sender && sender[i] && sender[i] != '-' && i + 1 < sizeof(base)) { base[i] = sender[i]; i++; }
+    base[i] = '\0';
+    if (base[0] == '\0')
+        return false;                     /* no sender name -> can't address a mailbox, and an empty
+                                             base must not masquerade as a free (unthrottled) gate slot */
+
+    int free_slot = -1, oldest = 0;
+    for (int k = 0; k < (int)(sizeof(m->mbox_gate) / sizeof(m->mbox_gate[0])); k++) {
+        if (m->mbox_gate[k].call[0] == '\0') { if (free_slot < 0) free_slot = k; continue; }
+        if (strcasecmp(m->mbox_gate[k].call, base) == 0) {
+            if (now < m->mbox_gate[k].next_ms) return false;   /* this sender is still cooling down */
+            m->mbox_gate[k].next_ms = now + MBOX_REPLY_COOLDOWN_MS;
+            return true;
+        }
+        if (m->mbox_gate[k].next_ms < m->mbox_gate[oldest].next_ms) oldest = k;
+    }
+    int slot = (free_slot >= 0) ? free_slot : oldest;          /* reuse a free slot, else evict stalest */
+    snprintf(m->mbox_gate[slot].call, sizeof(m->mbox_gate[slot].call), "%s", base);
+    m->mbox_gate[slot].next_ms = now + MBOX_REPLY_COOLDOWN_MS;
+    return true;
+}
+
+/* #mbox handling on the repeater. Returns true if the message should still flood
+ * normally (an @mention is a message for the network), false if not (a fetch/help
+ * command is answered by a routed reply and is not itself re-flooded). `pkt` is
+ * the received command whose path is reversed to route the reply back. */
+static bool mbox_handle(mc_mesh_t *m, const mc_packet_t *pkt,
+                        const mc_pub_channel_t *ch, const char *sender, const char *body)
+{
+    char mention[MC_MBOX_CALL];
+    const char *msg = NULL;
+    mbox_cmd_t cmd = mbox_classify(body, mention, sizeof(mention), &msg);
+
+    if (cmd == MBOX_MENTION) {
+        mbox_store(&m->mbox, mention, sender, msg, (uint32_t)time(NULL));
+        m->stats.mbox_stored++;
+        return true;                      /* stored; the message still floods normally */
+    }
+
+    /* fetch / anything-else -> a reply routed back to the sender (rate-limited PER
+     * sender so it can't be spammed); the command itself is not re-flooded. */
+    if (!mbox_rate_ok(m, sender, hal_millis()))
+        return false;
+
+    /* msgs is sized so "name: mbox NN/NN: <msgs>" fits one packet even for a long
+     * repeater name; send_routed_reply still guards the encode as a backstop. */
+    char reply[160];
+    if (cmd == MBOX_FETCH) {
+        char msgs[110];
+        int total = 0;
+        int shown = mbox_format_fetch(&m->mbox, sender, msgs, sizeof(msgs), &total);
+        if (total == 0)         snprintf(reply, sizeof(reply), "mbox: no messages for you");
+        else if (shown == 0)    snprintf(reply, sizeof(reply), "mbox: %d msg(s) for you, too long to show here", total);
+        else if (shown < total) snprintf(reply, sizeof(reply), "mbox %d/%d: %s", shown, total, msgs);
+        else                    snprintf(reply, sizeof(reply), "mbox %d: %s", total, msgs);
+    } else {
+        snprintf(reply, sizeof(reply), "%s", mbox_help_text());
+    }
+    if (send_routed_reply(m, pkt, ch, reply))   /* count only a reply that actually went out */
+        m->stats.mbox_replies++;
+    return false;
 }
 
 #define MESH_PROBE_MAX_SECS   3600
@@ -444,7 +560,7 @@ void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms)
     char txt[48];
     snprintf(txt, sizeof(txt), "probe %d/%d", m->probe_seq, m->probe_total);
     mc_packet_t pkt;
-    if (channel_build_txt(&m->probe_ch, m->cfg->name, txt, (uint32_t)time(NULL), &pkt) == 0) {
+    if (channel_build_txt(&m->probe_ch, m->cfg->name, txt, (uint32_t)time(NULL), ROUTE_TYPE_FLOOD, &pkt) == 0) {
         uint8_t hash[MC_MAX_HASH_SIZE];
         pkt_calc_hash(&pkt, hash);
         seen_check_and_add(m, hash);                     /* our echo is a dup */
@@ -515,6 +631,16 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
             /* an authorised operator starts a coverage/range test from a device */
             log_info("probe: requested by '%s' (%ds x %d)", sender, secs, count);
             mesh_start_probe(m, ch, secs, count);
+        } else if (m->cfg->mbox_enable && m->cfg->role != ROLE_HOTSPOT &&
+                   pkt_is_route_flood(pkt) && strcmp(ch->name, "#mbox") == 0) {
+            /* the mailbox lives on the repeater: store @mentions (still flooded),
+             * route a fetch/help reply back (and don't re-flood the command). A
+             * hotspot does NOT run the mailbox - it forwards #mbox up to the
+             * repeater like any other public channel. Only FLOOD packets are
+             * commands: our routed reply comes back as a DIRECT packet and must
+             * pass through untouched (else another mbox repeater on the path would
+             * "help"-reply to it). */
+            return mbox_handle(m, pkt, ch, sender, body);
         }
     }
     return true;
@@ -631,7 +757,11 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         return;
     }
 
-    /* hotspot role: scope to the personal bridge + pick direction-dependent power */
+    /* hotspot role: scope to the personal bridge + pick direction-dependent power.
+     * Applies to FLOOD and routed DIRECT alike - hotspot_decide downlinks a routed
+     * reply from an affinity repeater (an mbox fetch reply) and still drops
+     * anything out of the personal scope, so a stranger cannot use the hotspot as a
+     * general DIRECT relay. */
     int8_t tx_power = m->cfg->tx_power;
     if (m->cfg->role == ROLE_HOTSPOT) {
         if (!hotspot_decide(m, &pkt, aname, grp_sender, &tx_power)) {

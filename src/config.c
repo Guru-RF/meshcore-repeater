@@ -56,6 +56,7 @@ void config_defaults(mc_config_t *cfg)
     cfg->forward         = true;
     cfg->ping_pong       = true;       /* answer "ping" with "pong" (on the ping channel) */
     snprintf(cfg->ping_channel, sizeof(cfg->ping_channel), "%s", "#mesh"); /* built-in test channel */
+    cfg->mbox_enable     = true;       /* #mbox mailbox room on by default (channel registered at load) */
     cfg->verbose         = false;      /* set at runtime by the -v flag */
     cfg->control_port    = 4403;       /* local control interface on 127.0.0.1 (0 = off) */
     snprintf(cfg->link_mode, sizeof(cfg->link_mode), "%s", "off");
@@ -372,6 +373,8 @@ static int add_room(mc_config_t *cfg, const char *val)
     return 0;
 }
 
+static void config_ensure_hashtag_channel(mc_config_t *cfg, const char *name);
+
 int config_set(mc_config_t *cfg, const char *key, const char *val)
 {
     uint32_t u;
@@ -457,6 +460,9 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "advert_interval")) { if (!parse_u32(val, &u)) return -2; cfg->advert_interval = u; return 0; }
     if (!strcasecmp(key, "forward")) { if (!parse_bool(val, &b)) return -2; cfg->forward = b; return 0; }
     if (!strcasecmp(key, "ping_pong")) { if (!parse_bool(val, &b)) return -2; cfg->ping_pong = b; return 0; }
+    if (!strcasecmp(key, "mbox")) { if (!parse_bool(val, &b)) return -2; cfg->mbox_enable = b;
+        if (b) config_ensure_hashtag_channel(cfg, "#mbox");   /* register #mbox now so a runtime `set mbox on` works without a reload */
+        return 0; }
     if (!strcasecmp(key, "ping_channel")) {
         char clean[MC_ROOM_NAME_LEN * 2];
         trim_name(val, clean, sizeof(clean));
@@ -558,6 +564,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "advert_interval"))  { snprintf(out, outsz, "%u", cfg->advert_interval); return 0; }
     if (!strcasecmp(key, "forward"))          { snprintf(out, outsz, "%s", cfg->forward ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "mbox"))             { snprintf(out, outsz, "%s", cfg->mbox_enable ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_channel"))     { snprintf(out, outsz, "%s", cfg->ping_channel[0] ? cfg->ping_channel : "any"); return 0; }
     if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
     if (!strcasecmp(key, "link_mode"))        { snprintf(out, outsz, "%s", cfg->link_mode); return 0; }
@@ -592,19 +599,28 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
  * so ping/pong and monitoring always have it available even if the config file
  * never mentioned it. It is a derived channel (key = SHA256("#name")[0..15]), not
  * written back by config_save. */
-static void config_ensure_ping_channel(mc_config_t *cfg)
+static void config_ensure_hashtag_channel(mc_config_t *cfg, const char *name)
 {
-    if (cfg->ping_channel[0] == '\0')
+    if (!name || name[0] == '\0')
         return;
     for (int i = 0; i < cfg->n_public_channels; i++)
-        if (strcmp(cfg->public_channels[i].name, cfg->ping_channel) == 0)
+        if (strcmp(cfg->public_channels[i].name, name) == 0)
             return;                                  /* already present */
     uint8_t digest[32];
     SHA256_CTX c;
     sha256_init(&c);
-    sha256_update(&c, (const uint8_t *)cfg->ping_channel, strlen(cfg->ping_channel));
+    sha256_update(&c, (const uint8_t *)name, strlen(name));
     sha256_final(&c, digest);
-    register_channel(cfg, cfg->ping_channel, digest, 16, true);
+    register_channel(cfg, name, digest, 16, true);   /* key = SHA256("#name")[0..15] */
+}
+
+/* Register the built-in derived channels the daemon always wants: the ping/test
+ * channel and, when enabled, the #mbox mailbox. */
+static void config_ensure_ping_channel(mc_config_t *cfg)
+{
+    config_ensure_hashtag_channel(cfg, cfg->ping_channel);
+    if (cfg->mbox_enable)
+        config_ensure_hashtag_channel(cfg, "#mbox");
 }
 
 int config_load(mc_config_t *cfg, const char *path)
@@ -692,7 +708,7 @@ int config_save(const mc_config_t *cfg, const char *path)
         "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
         "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",
-        "role", "hotspot_power_high", "hotspot_power_low",
+        "role", "hotspot_power_high", "hotspot_power_low", "mbox",
         "link_mode", "link_peer", "link_port", NULL   /* link_key emitted below */
     };
     fprintf(f, "# MeshCore repeater configuration\n");

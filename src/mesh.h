@@ -24,6 +24,7 @@
 #include "packet.h"
 #include "identity.h"
 #include "config.h"
+#include "mbox.h"
 
 #define MESH_SEEN_SIZE      160   /* MeshCore MAX_PACKET_HASHES (128+32) */
 #define MESH_TXQ_SIZE        24
@@ -51,6 +52,8 @@ typedef struct {
     uint64_t ping_seen;       /* "ping" received on a public channel */
     uint64_t pong_sent;       /* "pong" answers transmitted */
     uint64_t probes_sent;     /* coverage-probe messages transmitted */
+    uint64_t mbox_stored;     /* #mbox @mention messages stored */
+    uint64_t mbox_replies;    /* #mbox local fetch/help replies sent */
     uint64_t blacklisted;     /* packets dropped from blacklisted senders */
     uint64_t tx_total;
     uint64_t tx_cad_busy;
@@ -106,6 +109,12 @@ typedef struct {
     int      probe_remaining;
     int      probe_seq;
     uint64_t probe_next_ms;
+
+    /* #mbox mailbox room (stores @mentions; routes fetch/help replies back) */
+    mc_mbox  mbox;
+    /* per-sender reply cooldown (anti-spam) so one station can't suppress replies
+     * to everyone else; keyed by base call, LRU-evicted. */
+    struct { char call[MC_MBOX_CALL]; uint64_t next_ms; } mbox_gate[8];
 } mc_mesh_t;
 
 void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg);

@@ -79,6 +79,7 @@ typedef struct {
      * (a coverage/range test). Empty list = feature off (nobody may run it). */
     char     probe_allow[MC_MAX_PROBE_ALLOW][MC_NAME_PAT_LEN];
     int      n_probe_allow;
+    bool     mbox_enable;        /* enable the #mbox mailbox room (stores @mentions) */
     bool     verbose;            /* -v: log public messages, adverts, and drops (runtime only) */
 
     /* ---- ham content policy ----

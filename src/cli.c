@@ -122,6 +122,10 @@ static void cmd_status(cli_ctx_t *ctx)
     printf("probe     : allow %d  sent %llu%s\n",
            ctx->cfg->n_probe_allow, (unsigned long long)s->probes_sent,
            ctx->mesh->probe_remaining > 0 ? "  (active)" : "");
+    if (ctx->cfg->mbox_enable)
+        printf("mbox      : on  held %d  stored %llu  replies %llu\n",
+               ctx->mesh->mbox.count, (unsigned long long)s->mbox_stored,
+               (unsigned long long)s->mbox_replies);
     if (ctx->link && ctx->link->mode != LINK_OFF) {
         if (ctx->link->mode == LINK_RX)
             printf("link      : RX node -> %s:%u  relayed %llu frames\n",
