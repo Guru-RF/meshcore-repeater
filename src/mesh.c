@@ -381,6 +381,18 @@ static bool is_probe(const char *msg, int *secs, int *count)
     return false;
 }
 
+/* Body is exactly `word` (leading/trailing whitespace ok), e.g. "time" / "date". */
+static bool is_word(const char *msg, const char *word)
+{
+    size_t wl = strlen(word);
+    while (*msg == ' ' || *msg == '\t') msg++;
+    if (strncasecmp(msg, word, wl) != 0)
+        return false;
+    const char *p = msg + wl;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return *p == '\0';
+}
+
 /* Build an encrypted public GRP_TXT carrying "sender: text". Returns 0 on ok. */
 static int channel_build_txt(const mc_pub_channel_t *ch, const char *sender,
                              const char *text, uint32_t ts, uint8_t route_type,
@@ -435,6 +447,53 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
+}
+
+/* Arm a #mesh "time"/"date" broadcast for the NEXT minute boundary. Transmitting
+ * exactly when a new minute starts gives clockless devices an exact reference (the
+ * HH:MM has zero seconds). Requests within the same minute coalesce into one send;
+ * the channel is copied so a config reload can't dangle it. */
+static void tod_arm(mc_mesh_t *m, const mc_pub_channel_t *ch, bool want_time, bool want_date)
+{
+    if (!m->tod_time_pending && !m->tod_date_pending)
+        m->tod_minute = (uint32_t)(time(NULL) / 60);   /* remember now; fire on the next rollover */
+    m->tod_ch = *ch;
+    if (want_time) m->tod_time_pending = true;
+    if (want_date) m->tod_date_pending = true;
+}
+
+/* Flood a time/date line on the armed #mesh channel (originated, like a pong). */
+static void send_tod(mc_mesh_t *m, const char *text)
+{
+    mc_packet_t pkt;
+    if (channel_build_txt(&m->tod_ch, m->cfg->name, text, (uint32_t)time(NULL), ROUTE_TYPE_FLOOD, &pkt) != 0)
+        return;
+    uint8_t hash[MC_MAX_HASH_SIZE];
+    pkt_calc_hash(&pkt, hash);
+    seen_check_and_add(m, hash);                        /* our own echo is a dup */
+    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+    m->stats.timeofday_sent++;
+}
+
+#define MESH_HELP_COOLDOWN_MS  8000   /* min gap between "help" summaries (anti-spam) */
+
+/* Answer "help" on the ping channel with a one-line summary of the commands that
+ * are currently enabled. Floods like a pong so any listener sees it. */
+static void send_help(mc_mesh_t *m, const mc_pub_channel_t *ch)
+{
+    char txt[160];
+    snprintf(txt, sizeof(txt), "commands:%s%s%s help",
+             m->cfg->ping_pong         ? " ping(alive)"                  : "",
+             m->cfg->timeofday_enable  ? " time/date(UTC clock)"         : "",
+             m->cfg->n_probe_allow > 0 ? " probe<secs count>(range,auth)" : "");
+    mc_packet_t pkt;
+    if (channel_build_txt(ch, m->cfg->name, txt, (uint32_t)time(NULL), ROUTE_TYPE_FLOOD, &pkt) != 0)
+        return;
+    uint8_t hash[MC_MAX_HASH_SIZE];
+    pkt_calc_hash(&pkt, hash);
+    seen_check_and_add(m, hash);
+    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+    m->stats.help_sent++;
 }
 
 #define MBOX_REPLY_COOLDOWN_MS  8000   /* min gap between local mbox replies (anti-spam) */
@@ -582,6 +641,34 @@ void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms)
     m->probe_next_ms = now_ms + m->probe_interval_ms;
 }
 
+void mesh_service_timeofday(mc_mesh_t *m, uint64_t now_ms)
+{
+    (void)now_ms;
+    if (!m->tod_time_pending && !m->tod_date_pending)
+        return;
+    time_t t = time(NULL);
+    uint32_t minute = (uint32_t)(t / 60);
+    if (minute == m->tod_minute)              /* still the same minute: wait for the tick */
+        return;
+    m->tod_minute = minute;                   /* a new minute just started - answer now */
+
+    struct tm g;
+    gmtime_r(&t, &g);
+    char txt[40];
+    if (m->tod_time_pending) {                /* HH:MM, no seconds (it is :00 right now) */
+        snprintf(txt, sizeof(txt), "time %02d:%02d UTC", g.tm_hour, g.tm_min);
+        send_tod(m, txt);
+        m->tod_time_pending = false;
+        log_info("mesh: time -> %s on '%s'", txt, m->tod_ch.name[0] ? m->tod_ch.name : "-");
+    }
+    if (m->tod_date_pending) {
+        snprintf(txt, sizeof(txt), "date %04d-%02d-%02d", g.tm_year + 1900, g.tm_mon + 1, g.tm_mday);
+        send_tod(m, txt);
+        m->tod_date_pending = false;
+        log_info("mesh: date -> %s on '%s'", txt, m->tod_ch.name[0] ? m->tod_ch.name : "-");
+    }
+}
+
 /* Copy the self-reported sender name (the text before the first ": "). */
 static void grp_sender_name(const uint8_t *plain, char *out, size_t outsz)
 {
@@ -643,6 +730,16 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
             /* an authorised operator starts a coverage/range test from a device */
             log_info("probe: requested by '%s' (%ds x %d)", sender, secs, count);
             mesh_start_probe(m, ch, secs, count);
+        } else if (on_ping_ch && m->cfg->timeofday_enable && is_word(body, "time")) {
+            tod_arm(m, ch, true, false);   /* answered at the next minute boundary */
+        } else if (on_ping_ch && m->cfg->timeofday_enable && is_word(body, "date")) {
+            tod_arm(m, ch, false, true);
+        } else if (on_ping_ch && is_word(body, "help")) {
+            uint64_t now = hal_millis();
+            if (!m->mesh_help_next_ms || now >= m->mesh_help_next_ms) {   /* anti-spam / coalesce */
+                send_help(m, ch);
+                m->mesh_help_next_ms = now + MESH_HELP_COOLDOWN_MS;
+            }
         } else if (m->cfg->mbox_enable && m->cfg->role != ROLE_HOTSPOT &&
                    pkt_is_route_flood(pkt) && strcmp(ch->name, "#mbox") == 0) {
             /* the mailbox lives on the repeater: store @mentions (still flooded),

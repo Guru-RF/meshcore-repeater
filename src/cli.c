@@ -126,6 +126,9 @@ static void cmd_status(cli_ctx_t *ctx)
         printf("mbox      : on  held %d  stored %llu  replies %llu\n",
                ctx->mesh->mbox.count, (unsigned long long)s->mbox_stored,
                (unsigned long long)s->mbox_replies);
+    if (ctx->cfg->timeofday_enable)
+        printf("timeofday : on (time/date on the ping channel)  sent %llu\n",
+               (unsigned long long)s->timeofday_sent);
     if (ctx->link && ctx->link->mode != LINK_OFF) {
         if (ctx->link->mode == LINK_RX)
             printf("link      : RX node -> %s:%u  relayed %llu frames\n",

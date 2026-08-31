@@ -57,6 +57,7 @@ void config_defaults(mc_config_t *cfg)
     cfg->ping_pong       = true;       /* answer "ping" with "pong" (on the ping channel) */
     snprintf(cfg->ping_channel, sizeof(cfg->ping_channel), "%s", "#mesh"); /* built-in test channel */
     cfg->mbox_enable     = true;       /* #mbox mailbox room on by default (channel registered at load) */
+    cfg->timeofday_enable = true;      /* answer "time"/"date" on #mesh (needs an accurate clock) */
     cfg->verbose         = false;      /* set at runtime by the -v flag */
     cfg->control_port    = 4403;       /* local control interface on 127.0.0.1 (0 = off) */
     snprintf(cfg->link_mode, sizeof(cfg->link_mode), "%s", "off");
@@ -463,6 +464,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "mbox")) { if (!parse_bool(val, &b)) return -2; cfg->mbox_enable = b;
         if (b) config_ensure_hashtag_channel(cfg, "#mbox");   /* register #mbox now so a runtime `set mbox on` works without a reload */
         return 0; }
+    if (!strcasecmp(key, "timeofday")) { if (!parse_bool(val, &b)) return -2; cfg->timeofday_enable = b; return 0; }
     if (!strcasecmp(key, "ping_channel")) {
         char clean[MC_ROOM_NAME_LEN * 2];
         trim_name(val, clean, sizeof(clean));
@@ -564,6 +566,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "advert_interval"))  { snprintf(out, outsz, "%u", cfg->advert_interval); return 0; }
     if (!strcasecmp(key, "forward"))          { snprintf(out, outsz, "%s", cfg->forward ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_pong"))        { snprintf(out, outsz, "%s", cfg->ping_pong ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "timeofday"))        { snprintf(out, outsz, "%s", cfg->timeofday_enable ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "mbox"))             { snprintf(out, outsz, "%s", cfg->mbox_enable ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "ping_channel"))     { snprintf(out, outsz, "%s", cfg->ping_channel[0] ? cfg->ping_channel : "any"); return 0; }
     if (!strcasecmp(key, "control_port"))     { snprintf(out, outsz, "%u", cfg->control_port); return 0; }
@@ -704,7 +707,7 @@ int config_save(const mc_config_t *cfg, const char *path)
         "spi_dev", "spi_speed", "gpio_chip", "gpio_reset", "gpio_busy", "gpio_dio1",
         "gpio_nss", "rf_switch", "gpio_rxen", "gpio_txen", "use_leds", "gpio_led_on",
         "gpio_led_data", "name", "key_file", "location", "latitude",
-        "longitude", "advert_interval", "forward", "ping_pong", "control_port",
+        "longitude", "advert_interval", "forward", "ping_pong", "timeofday", "control_port",
         "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
         "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",

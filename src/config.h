@@ -80,6 +80,7 @@ typedef struct {
     char     probe_allow[MC_MAX_PROBE_ALLOW][MC_NAME_PAT_LEN];
     int      n_probe_allow;
     bool     mbox_enable;        /* enable the #mbox mailbox room (stores @mentions) */
+    bool     timeofday_enable;   /* answer "time"/"date" on the ping channel (#mesh) */
     bool     verbose;            /* -v: log public messages, adverts, and drops (runtime only) */
 
     /* ---- ham content policy ----

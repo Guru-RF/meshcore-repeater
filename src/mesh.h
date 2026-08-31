@@ -54,6 +54,8 @@ typedef struct {
     uint64_t probes_sent;     /* coverage-probe messages transmitted */
     uint64_t mbox_stored;     /* #mbox @mention messages stored */
     uint64_t mbox_replies;    /* #mbox local fetch/help replies sent */
+    uint64_t timeofday_sent;  /* #mesh time/date broadcasts transmitted */
+    uint64_t help_sent;       /* #mesh "help" command summaries transmitted */
     uint64_t blacklisted;     /* packets dropped from blacklisted senders */
     uint64_t tx_total;
     uint64_t tx_cad_busy;
@@ -115,6 +117,15 @@ typedef struct {
     /* per-sender reply cooldown (anti-spam) so one station can't suppress replies
      * to everyone else; keyed by base call, LRU-evicted. */
     struct { char call[MC_MBOX_CALL]; uint64_t next_ms; } mbox_gate[8];
+
+    /* #mesh time/date service: a "time"/"date" request is answered AT the next
+     * minute boundary (so the HH:MM is exact - zero seconds - for clockless
+     * devices). Requests within the same minute coalesce into one broadcast. */
+    mc_pub_channel_t tod_ch;        /* channel to answer on (copied: reload-safe) */
+    uint32_t tod_minute;            /* wall-clock minute we armed in; fire on change */
+    bool     tod_time_pending;
+    bool     tod_date_pending;
+    uint64_t mesh_help_next_ms;     /* cooldown between "help" command summaries */
 } mc_mesh_t;
 
 void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg);
@@ -124,6 +135,10 @@ void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg);
 void mesh_start_probe(mc_mesh_t *m, const mc_pub_channel_t *ch, int secs, int count);
 /* Service the active probe (call every loop iteration, like mesh_service_tx). */
 void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms);
+
+/* Service a pending #mesh time/date request: broadcasts at the next minute
+ * boundary. Call every loop iteration (like mesh_service_probe). */
+void mesh_service_timeofday(mc_mesh_t *m, uint64_t now_ms);
 
 /* Handle a freshly received raw packet (rssi/snr from the radio). */
 void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,

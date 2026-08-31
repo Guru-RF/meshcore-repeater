@@ -302,6 +302,7 @@ the repeater joins that network out of the box:
 | `ping_pong` | `true` | answer `ping` with `pong` (a liveness test) |
 | `ping_channel` | `mesh` | channel ping/pong answers on; `any` = every channel |
 | `probe_allow` | *(none)* | callsign pattern(s) allowed to run `probe` (repeatable; empty = off) |
+| `timeofday` | `true` | answer `time`/`date` on the ping channel (needs an accurate clock) |
 | `mbox` | `true` | `#mbox` store-and-forward mailbox (set `false` to disable) — see below |
 | `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
 
@@ -409,6 +410,38 @@ without the allow-list from the repeater side: `meshcore-cli probe <secs> <count
 probe_allow = ON6URE*      # who may run it (repeatable; empty = nobody)
 probe_allow = OR7F*
 ```
+
+### `time` / `date` (clock for clockless devices)
+
+With `timeofday = true` (the default), sending **`time`** or **`date`** on `#mesh`
+makes the repeater broadcast the current time / date — a simple time source for
+nodes without a GPS or RTC. The catch that makes it accurate: a `time` reply is
+**held until the top of the next minute and sent exactly then**, so the `HH:MM`
+carries **no seconds** and a receiver can set its clock precisely to the tick.
+
+```
+<name>: time 14:23 UTC
+<name>: date 2026-08-31
+```
+
+Times are **UTC**. Requests within the same minute **coalesce** into one broadcast
+(so ten `time` asks still cost one transmit), and the reply floods `#mesh` like a
+`pong`, so any listener nearby can sync off it. It follows `ping_channel`, so it
+lives wherever `ping` does (default `#mesh`). **It is only as good as the
+repeater's own clock** — keep the host on NTP (or a GPS/RTC); set `timeofday =
+false` on a node whose clock you don't trust.
+
+### `help`
+
+Sending **`help`** on `#mesh` makes the repeater broadcast a one-line summary of
+the commands that are currently enabled, so a new user can discover what's there:
+
+```
+<name>: commands: ping(alive) time/date(UTC clock) probe<secs count>(range,auth) help
+```
+
+Only the enabled commands appear (e.g. `probe` shows only when `probe_allow` is
+set). It follows `ping_channel` and is rate-limited so it can't be spammed.
 
 ### `#mbox` mailbox
 

@@ -288,6 +288,7 @@ int main(int argc, char **argv)
         if (!rx_node) {
             mesh_service_tx(&mesh, now);
             mesh_service_probe(&mesh, now);
+            mesh_service_timeofday(&mesh, now);
         }
         if (mesh.stats.tx_total != prev_tx) {
             prev_tx = mesh.stats.tx_total;

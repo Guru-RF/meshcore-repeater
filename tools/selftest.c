@@ -839,6 +839,105 @@ static void test_mbox(void)
             "hotspot drops a stranger's DIRECT public packet (no free relay hop)"); }
 }
 
+static void test_timeofday(void)
+{
+    printf("[#mesh time/date service: minute-aligned broadcast]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    uint8_t raw[MC_MAX_TRANS_UNIT]; int n;
+
+    mc_config_t cfg; config_defaults(&cfg);
+    config_set(&cfg, "name", "OR7F-4");
+    config_set(&cfg, "room", "mesh");             /* #mesh = public_channels[0], the ping channel */
+    CHECK(cfg.timeofday_enable, "timeofday on by default");
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    const mc_pub_channel_t *mesh_ch = &cfg.public_channels[0];
+
+    /* a "time" request ARMS a pending broadcast but does NOT send mid-minute */
+    mc_mesh_t m; mesh_init(&m, &id, &cfg);
+    { mc_packet_t p; build_public_text(&cfg, "ON4XYZ: time", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m, raw, (size_t)n, -60, 24);
+      CHECK(m.tod_time_pending && !m.tod_date_pending, "'time' arms a pending broadcast");
+      mesh_service_timeofday(&m, hal_millis());
+      CHECK(m.tod_time_pending && m.stats.timeofday_sent == 0,   /* the request itself floods; no broadcast yet */
+            "no broadcast within the same minute (waits for the tick)"); }
+
+    /* the minute rolls over -> the broadcast fires, HH:MM with no seconds */
+    m.tod_minute -= 1;                             /* simulate 'a new minute began' */
+    mesh_service_timeofday(&m, hal_millis());
+    CHECK(!m.tod_time_pending && m.stats.timeofday_sent == 1, "a new minute -> time broadcast sent");
+    { int s = grp_slot(&m);
+      CHECK(s >= 0, "time broadcast enqueued (flood)");
+      if (s >= 0) {
+          CHECK(pkt_route_type(&m.txq[s].pkt) == ROUTE_TYPE_FLOOD, "time broadcast is a FLOOD");
+          char body[128]; decrypt_grp(mesh_ch, &m.txq[s].pkt, body, sizeof(body));
+          const char *tp = strstr(body, "time ");
+          CHECK(tp && strstr(body, "UTC"), "reply is 'time HH:MM UTC' (got '%s')", body);
+          /* "HH:MM" then a space -> exactly one colon, no seconds */
+          CHECK(tp && tp[7] == ':' && tp[10] == ' ',
+                "time is HH:MM with no seconds (got '%s')", tp ? tp : ""); } }
+
+    /* "date" -> "date YYYY-MM-DD" at the next minute */
+    { mc_mesh_t md; mesh_init(&md, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "ON4XYZ: date", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&md, raw, (size_t)n, -60, 24);
+      CHECK(md.tod_date_pending && !md.tod_time_pending, "'date' arms a pending date broadcast");
+      md.tod_minute -= 1; mesh_service_timeofday(&md, hal_millis());
+      int s = grp_slot(&md);
+      CHECK(s >= 0 && md.stats.timeofday_sent == 1, "date broadcast sent at the next minute");
+      if (s >= 0) {
+          char body[128]; decrypt_grp(mesh_ch, &md.txq[s].pkt, body, sizeof(body));
+          const char *dp = strstr(body, "date ");
+          CHECK(dp && dp[9] == '-' && dp[12] == '-',
+                "reply is 'date YYYY-MM-DD' (got '%s')", body); } }
+
+    /* multiple requests in one minute COALESCE into a single broadcast per type */
+    { mc_mesh_t mc; mesh_init(&mc, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "A: time", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_recv(&mc, raw, (size_t)n, -60, 24);
+      build_public_text(&cfg, "B: time", &p);       /* a 2nd requester, same minute */
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&mc, raw, (size_t)n, -60, 24);
+      mc.tod_minute -= 1; mesh_service_timeofday(&mc, hal_millis());
+      CHECK(mc.stats.timeofday_sent == 1, "two 'time' requests in a minute -> one broadcast (coalesced)"); }
+
+    /* off the ping channel, and when disabled, "time" is NOT armed */
+    { mc_config_t c2; config_defaults(&c2);
+      config_set(&c2, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");  /* Public = [0] */
+      config_set(&c2, "room", "mesh");                                /* #mesh = [1] */
+      config_to_sx126x(&c2, &radio); sx126x_init(&radio);
+      mc_mesh_t m2; mesh_init(&m2, &id, &c2);
+      mc_packet_t p; build_public_text(&c2, "X: time", &p);           /* built on Public, not #mesh */
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m2, raw, (size_t)n, -60, 24);
+      CHECK(!m2.tod_time_pending, "'time' off the ping channel is not armed"); }
+    { mc_config_t c3; config_defaults(&c3);
+      config_set(&c3, "room", "mesh");
+      config_set(&c3, "timeofday", "off");
+      config_to_sx126x(&c3, &radio); sx126x_init(&radio);
+      mc_mesh_t m3; mesh_init(&m3, &id, &c3);
+      mc_packet_t p; build_public_text(&c3, "X: time", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m3, raw, (size_t)n, -60, 24);
+      CHECK(!m3.tod_time_pending && !c3.timeofday_enable, "timeofday=off -> 'time' ignored"); }
+
+    /* "help" -> a one-line summary of the enabled commands (flooded, rate-limited) */
+    { mc_mesh_t mh; mesh_init(&mh, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "ON4XYZ: help", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&mh, raw, (size_t)n, -60, 24);
+      CHECK(mh.stats.help_sent == 1, "'help' -> one command summary");
+      char body[160]; body[0] = '\0';              /* find the reply by content (the request also floods) */
+      for (int i = 0; i < MESH_TXQ_SIZE; i++)
+          if (mh.txq[i].used && pkt_payload_type(&mh.txq[i].pkt) == PAYLOAD_TYPE_GRP_TXT) {
+              char b[160]; decrypt_grp(mesh_ch, &mh.txq[i].pkt, b, sizeof(b));
+              if (strstr(b, "commands:")) { snprintf(body, sizeof(body), "%s", b); break; }
+          }
+      CHECK(strstr(body, "commands:") && strstr(body, "ping") &&
+            strstr(body, "time/date") && strstr(body, "help") && !strstr(body, "probe"),
+            "help lists the enabled commands (got '%s')", body);
+      /* a 2nd help within the cooldown is suppressed (distinct sender to dodge dedup) */
+      build_public_text(&cfg, "ON4ABC: help", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&mh, raw, (size_t)n, -60, 24);
+      CHECK(mh.stats.help_sent == 1, "a 2nd 'help' within the cooldown is suppressed"); }
+}
+
 static void test_hotspot(void)
 {
     printf("[hotspot role: personal scope + power asymmetry]\n");
@@ -1305,6 +1404,7 @@ int main(void)
     test_ping_channel();
     test_probe();
     test_mbox();
+    test_timeofday();
     test_link();
     test_blacklist();
     test_aprs();
