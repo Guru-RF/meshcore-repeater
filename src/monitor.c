@@ -61,16 +61,20 @@ bool monitor_add(mc_monitor *mon, int fd, const char *cmdline)
     mc_mon_conn_t c;
     memset(&c, 0, sizeof(c));
     c.fd = fd;
-    if (*p == '\0' || !strcasecmp(p, "all"))    c.kind = MON_ALL;
-    else if (p[0] == '#')                     { c.kind = MON_ROOM;    snprintf(c.target, sizeof(c.target), "%s", p); }
-    else if (!strcasecmp(p, "public"))          c.kind = MON_PUBLIC;
-    else                                      { c.kind = MON_CHANNEL; snprintf(c.target, sizeof(c.target), "%s", p); }
+    if (*p == '\0' || !strcasecmp(p, "all"))            c.kind = MON_ALL;
+    else if (p[0] == '#')                             { c.kind = MON_ROOM;    snprintf(c.target, sizeof(c.target), "%s", p); }
+    else if (!strcasecmp(p, "public"))                  c.kind = MON_PUBLIC;
+    else if (!strcasecmp(p, "adverts") || !strcasecmp(p, "advert")) c.kind = MON_ADVERT;
+    else if (!strcasecmp(p, "drops")   || !strcasecmp(p, "drop"))   c.kind = MON_DROP;
+    else                                              { c.kind = MON_CHANNEL; snprintf(c.target, sizeof(c.target), "%s", p); }
 
     fcntl(fd, F_SETFL, O_NONBLOCK);
     mon->conn[mon->n++] = c;
 
-    const char *what = c.kind == MON_ALL     ? "all activity (public msgs, region hits, drops)"
+    const char *what = c.kind == MON_ALL     ? "all activity (public msgs, region hits, adverts, drops)"
                      : c.kind == MON_PUBLIC  ? "all public channels"
+                     : c.kind == MON_ADVERT  ? "adverts"
+                     : c.kind == MON_DROP    ? "drops"
                      : c.kind == MON_ROOM    ? c.target
                      :                         c.target;
     int len = snprintf(hdr, sizeof(hdr), "# monitoring %s%s - Ctrl-C to stop\n",
@@ -100,6 +104,9 @@ bool monitor_wants_room(const mc_mon_conn_t *c, const char *room)
     if (c->kind == MON_ROOM) return room && strcmp(c->target, room) == 0;  /* case-sensitive */
     return false;
 }
+
+bool monitor_wants_advert(const mc_mon_conn_t *c) { return c->kind == MON_ALL || c->kind == MON_ADVERT; }
+bool monitor_wants_drop(const mc_mon_conn_t *c)   { return c->kind == MON_ALL || c->kind == MON_DROP; }
 
 void monitor_public(mc_monitor *mon, const char *chan, const char *text,
                     int rssi, int8_t snr_q)
@@ -133,6 +140,24 @@ void monitor_region(mc_monitor *mon, const char *room, uint8_t ptype,
             mon_write(mon, i, line, (size_t)len);
 }
 
+void monitor_advert(mc_monitor *mon, const char *name, uint8_t atype,
+                    bool has_loc, double lat, double lon, int rssi, int8_t snr_q)
+{
+    if (mon->n == 0) return;
+    char t[16]; stamp(t, sizeof(t));
+    char line[200];
+    int len = has_loc
+        ? snprintf(line, sizeof(line), "%s [advert] '%s' type=%u  loc %.5f,%.5f  (rssi %d snr %.1f)\n",
+                   t, (name && *name) ? name : "?", atype, lat, lon, rssi, snr_q / 4.0)
+        : snprintf(line, sizeof(line), "%s [advert] '%s' type=%u  (rssi %d snr %.1f)\n",
+                   t, (name && *name) ? name : "?", atype, rssi, snr_q / 4.0);
+    if (len < 0) return;
+    if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
+    for (int i = mon->n - 1; i >= 0; i--)              /* backward: mon_write may compact */
+        if (monitor_wants_advert(&mon->conn[i]))
+            mon_write(mon, i, line, (size_t)len);
+}
+
 void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason, int chan_hash)
 {
     if (mon->n == 0) return;
@@ -145,8 +170,8 @@ void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason, int chan_h
                    t, ptype, reason ? reason : "");
     if (len < 0) return;
     if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
-    for (int i = mon->n - 1; i >= 0; i--)
-        if (mon->conn[i].kind == MON_ALL)              /* drops only in 'all' view */
+    for (int i = mon->n - 1; i >= 0; i--)              /* 'all' + 'drops' views */
+        if (monitor_wants_drop(&mon->conn[i]))
             mon_write(mon, i, line, (size_t)len);
 }
 

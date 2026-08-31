@@ -1203,23 +1203,76 @@ static void test_monitor(void)
     for (int i = 0; i < mon.n; i++) close(mon.conn[i].fd);
     close(pp[0]); close(pp[1]);
 
-    /* emit path: a MON_ALL monitor receives formatted public + region lines */
+    /* new firehose sub-filters: adverts + drops */
+    { mc_monitor m4; monitor_init(&m4);
+      int r[2];
+      if (pipe(r) == 0) {
+          CHECK(monitor_add(&m4, dup(r[1]), "monitor adverts") && m4.conn[0].kind == MON_ADVERT,
+                "monitor adverts -> MON_ADVERT");
+          CHECK(monitor_add(&m4, dup(r[1]), "monitor drops") && m4.conn[1].kind == MON_DROP,
+                "monitor drops -> MON_DROP");
+          CHECK(monitor_wants_advert(&m4.conn[0]) && !monitor_wants_drop(&m4.conn[0]),
+                "MON_ADVERT wants adverts only");
+          CHECK(monitor_wants_drop(&m4.conn[1]) && !monitor_wants_advert(&m4.conn[1]),
+                "MON_DROP wants drops only");
+          CHECK(!monitor_wants_public(&m4.conn[0], "AnyChan") && !monitor_wants_room(&m4.conn[1], "#x"),
+                "advert/drop monitors ignore the public + room message streams");
+          for (int i = 0; i < m4.n; i++) close(m4.conn[i].fd);
+          close(r[0]); close(r[1]);
+      } }
+
+    /* emit path: a MON_ALL monitor receives public + region + advert + drop lines */
     { mc_monitor m2; monitor_init(&m2);
       int q[2];
       if (pipe(q) == 0) {
           monitor_add(&m2, dup(q[1]), "monitor all");        /* header written to pipe */
           monitor_public(&m2, "TestChan", "ON4XYZ: hi", -70, 32);
           monitor_region(&m2, "#sysop", 0x05, 42, -80, 20);
+          monitor_advert(&m2, "ON0RFG", 1, true, 50.85000, 4.35000, -60, 24);
+          monitor_drop(&m2, 0x03, "private unicast (DM)", -1);
           char buf[1024]; ssize_t rr = read(q[0], buf, sizeof(buf) - 1);
           buf[rr > 0 ? rr : 0] = '\0';
           CHECK(strstr(buf, "[public TestChan]") && strstr(buf, "ON4XYZ: hi"),
                 "monitor_public streams a formatted line");
           CHECK(strstr(buf, "[room #sysop]") && strstr(buf, "type=0x05") && strstr(buf, "len=42B"),
                 "monitor_region streams region metadata");
+          CHECK(strstr(buf, "[advert] 'ON0RFG'") && strstr(buf, "loc 50.85000,4.35000"),
+                "monitor_advert streams name + location");
+          CHECK(strstr(buf, "[drop]") && strstr(buf, "private unicast (DM)"),
+                "monitor_drop streams the discard reason");
           for (int i = 0; i < m2.n; i++) close(m2.conn[i].fd);
           close(q[0]); close(q[1]);
       }
     }
+
+    /* routing isolation: an 'adverts' monitor sees ONLY adverts (not public/drop),
+     * a 'drops' monitor sees ONLY drops */
+    { mc_monitor ma; monitor_init(&ma);
+      int a[2];
+      if (pipe(a) == 0) {
+          monitor_add(&ma, dup(a[1]), "monitor adverts");
+          monitor_public(&ma, "C", "X: hi", -70, 20);        /* not for an adverts monitor */
+          monitor_drop(&ma, 0x03, "dm", -1);                 /* not for an adverts monitor */
+          monitor_advert(&ma, "ON0ABC", 2, false, 0, 0, -55, 28);
+          char b[512]; ssize_t rr = read(a[0], b, sizeof(b) - 1); b[rr > 0 ? rr : 0] = '\0';
+          CHECK(strstr(b, "[advert] 'ON0ABC'") && !strstr(b, "[public") && !strstr(b, "[drop]"),
+                "MON_ADVERT carries adverts only");
+          for (int i = 0; i < ma.n; i++) close(ma.conn[i].fd);
+          close(a[0]); close(a[1]);
+      } }
+    { mc_monitor md; monitor_init(&md);
+      int a[2];
+      if (pipe(a) == 0) {
+          monitor_add(&md, dup(a[1]), "monitor drops");
+          monitor_advert(&md, "ON0ABC", 2, false, 0, 0, -55, 28); /* not for a drops monitor */
+          monitor_public(&md, "C", "X: hi", -70, 20);             /* not for a drops monitor */
+          monitor_drop(&md, 0x05, "unconfigured channel", 0x8b);
+          char b[512]; ssize_t rr = read(a[0], b, sizeof(b) - 1); b[rr > 0 ? rr : 0] = '\0';
+          CHECK(strstr(b, "[drop]") && strstr(b, "chan=0x8B") && !strstr(b, "[advert]") && !strstr(b, "[public"),
+                "MON_DROP carries drops only (with channel hash)");
+          for (int i = 0; i < md.n; i++) close(md.conn[i].fd);
+          close(a[0]); close(a[1]);
+      } }
 
     /* reap: a monitor whose client has gone is dropped on the next poll (this is
      * the bug that leaked zombie monitors until the table filled) */

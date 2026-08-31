@@ -75,7 +75,7 @@ static void cmd_help(void)
         "  neighbors            list heard nodes\n"
         "  channels             list configured public channels (forwarded)\n"
         "  blacklist [add|remove|list] <name>   ignore a node by name\n"
-        "  monitor [all|public|<chan>|#room]    stream live messages (meshcore-cli)\n"
+        "  monitor [all|public|<chan>|#room|adverts|drops]  stream live events (meshcore-cli)\n"
         "  probe <secs> <count> send a coverage-test probe (0 count = cancel)\n"
         "  advert               send a self-advert now\n"
         "  save                 write config back to file\n"
@@ -266,7 +266,7 @@ void cli_handle_line(cli_ctx_t *ctx, const char *line)
          * events; reaching here means the interactive stdin CLI, which can't hold
          * a streaming connection. */
         printf("monitor streams over the control port - run it from the client:\n"
-               "  meshcore-cli monitor [all|public|<channel>|#room]\n");
+               "  meshcore-cli monitor [all|public|<channel>|#room|adverts|drops]\n");
         fflush(stdout);
     } else if (!strcasecmp(cmd, "get")) {
         char *key = strtok(NULL, " \t\r\n");

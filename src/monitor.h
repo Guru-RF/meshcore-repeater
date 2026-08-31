@@ -4,10 +4,12 @@
  * A "monitor" is a meshcore-cli client that streams filtered message events
  * from the running repeater for debugging, e.g.:
  *
- *   meshcore-cli monitor              # everything (public msgs, region hits, drops)
+ *   meshcore-cli monitor              # firehose: public msgs, region hits, adverts, drops
  *   meshcore-cli monitor public       # decrypted messages on any public channel
  *   meshcore-cli monitor <name>       # decrypted messages on the channel named <name>
  *   meshcore-cli monitor #sysop       # a transport region (opaque: metadata only)
+ *   meshcore-cli monitor adverts      # signed adverts heard (name/type/rssi/snr/loc)
+ *   meshcore-cli monitor drops        # every packet the node discarded, with the reason
  *
  * The connection is held open and events are pushed as they happen. A public
  * channel's traffic can be decrypted (we hold the key), so its text is shown; a
@@ -24,7 +26,7 @@
 #define MC_MAX_MONITORS      4
 #define MC_MON_TARGET_LEN    40
 
-typedef enum { MON_ALL = 0, MON_PUBLIC, MON_CHANNEL, MON_ROOM } mon_kind_t;
+typedef enum { MON_ALL = 0, MON_PUBLIC, MON_CHANNEL, MON_ROOM, MON_ADVERT, MON_DROP } mon_kind_t;
 
 typedef struct {
     int        fd;                        /* client socket (kept open, O_NONBLOCK) */
@@ -51,12 +53,17 @@ void monitor_public(mc_monitor *mon, const char *chan, const char *text,
                     int rssi, int8_t snr_q);
 void monitor_region(mc_monitor *mon, const char *room, uint8_t ptype,
                     unsigned len, int rssi, int8_t snr_q);
+/* A signed advert we heard (verified). has_loc gates lat/lon. */
+void monitor_advert(mc_monitor *mon, const char *name, uint8_t atype,
+                    bool has_loc, double lat, double lon, int rssi, int8_t snr_q);
 /* chan_hash is the group channel-hash byte for GRP drops, or -1 (not a group msg). */
 void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason, int chan_hash);
 
 /* Routing predicates (exposed for testing). */
 bool monitor_wants_public(const mc_mon_conn_t *c, const char *chan);
 bool monitor_wants_room(const mc_mon_conn_t *c, const char *room);
+bool monitor_wants_advert(const mc_mon_conn_t *c);
+bool monitor_wants_drop(const mc_mon_conn_t *c);
 
 /* poll(2) integration for the single main loop. monitor_pollfds fills up to
  * `max` pollfds (events=0: we only care about hang-up); monitor_reap drops any

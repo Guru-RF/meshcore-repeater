@@ -92,6 +92,17 @@ static int8_t own_tx_power(const mc_mesh_t *m)
     return (m->cfg->role == ROLE_HOTSPOT) ? m->cfg->hotspot_power_high : m->cfg->tx_power;
 }
 
+/* Emit a "[drop]" monitor event for a parsed packet (payload type + group
+ * channel-hash inferred). No-op when no monitor is attached. */
+static void mon_pkt_drop(mc_mesh_t *m, const mc_packet_t *pkt, const char *reason)
+{
+    if (!m->mon) return;
+    uint8_t pt = pkt_payload_type(pkt);
+    int chash = ((pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) && pkt->payload_len >= 1)
+                ? pkt->payload[0] : -1;
+    monitor_drop(m->mon, pt, reason, chash);
+}
+
 /* Does the packet's path contain an affinity repeater's hash (came via the
  * mesh)? Used to pick downlink (low) vs uplink (high) power in hotspot mode. */
 static bool path_has_affinity(const mc_mesh_t *m, const mc_packet_t *pkt)
@@ -607,6 +618,7 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         m->stats.blacklisted++;
         if (m->cfg->verbose)
             log_info("[ignored] blacklisted '%s' on %s", sender, ch->name[0] ? ch->name : "-");
+        mon_pkt_drop(m, pkt, "blacklisted sender");
         return false;                   /* drop: no forward, no pong */
     }
 
@@ -652,6 +664,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     mc_packet_t pkt;
     if (pkt_parse(&pkt, raw, len) != 0) {
         m->stats.rx_bad_parse++;
+        if (m->mon) monitor_drop(m->mon, 0xFF, "parse error (malformed frame)", -1);
         return;
     }
     pkt.rssi_dbm = rssi_dbm;
@@ -663,6 +676,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     pkt_calc_hash(&pkt, hash);
     if (seen_check_and_add(m, hash)) {
         m->stats.rx_dup++;
+        mon_pkt_drop(m, &pkt, "duplicate (already seen)");
         return;
     }
 
@@ -678,6 +692,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         if (!mc_advert_verify(&pkt, pub)) {
             m->stats.rx_advert_bad++;
             log_debug("mesh: dropped advert with bad signature");
+            mon_pkt_drop(m, &pkt, "advert: bad signature");
             return; /* forged - do not propagate */
         }
         mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
@@ -685,6 +700,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             m->stats.blacklisted++;
             if (m->cfg->verbose)
                 log_info("[ignored] blacklisted advert '%s'", aname);
+            mon_pkt_drop(m, &pkt, "advert: blacklisted sender");
             return; /* don't register as a neighbour, don't re-flood */
         }
         m->stats.rx_advert++;
@@ -702,6 +718,8 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
                 log_info("[advert] '%s' type=%u  rssi %d snr %.1f",
                          aname[0] ? aname : "?", atype, rssi_dbm, snr_q / 4.0);
         }
+        if (m->mon)
+            monitor_advert(m->mon, aname, atype, has_loc, lat, lon, rssi_dbm, snr_q);
         /* APRS-IS iGate: gate a node's advertised position (validated inside) */
         if (m->aprs && has_loc)
             aprsis_gate_node(m->aprs, hal_millis(), aname, atype, lat, lon, pub);
@@ -715,6 +733,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         if (m->cfg->verbose)
             log_info("[trace] %u hops, rssi %d snr %.1f (not forwarded yet)",
                      pkt_path_hash_count(&pkt), rssi_dbm, snr_q / 4.0);
+        mon_pkt_drop(m, &pkt, "trace (not forwarded yet)");
         return;
     }
 
@@ -749,11 +768,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         }
         if (m->cfg->verbose)
             log_info("[ignored] type=0x%02X dropped: %s", pt, decision_reason(decision));
-        if (m->mon) {
-            int chash = ((pt == PAYLOAD_TYPE_GRP_TXT || pt == PAYLOAD_TYPE_GRP_DATA) &&
-                         pkt.payload_len >= 1) ? pkt.payload[0] : -1;
-            monitor_drop(m->mon, pt, decision_reason(decision), chash);
-        }
+        mon_pkt_drop(m, &pkt, decision_reason(decision));
         return;
     }
 
@@ -767,6 +782,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         if (!hotspot_decide(m, &pkt, aname, grp_sender, &tx_power)) {
             if (m->cfg->verbose)
                 log_info("[hotspot] not forwarding type=0x%02X (out of personal scope)", pt);
+            mon_pkt_drop(m, &pkt, "hotspot: out of personal scope");
             return;
         }
     }
@@ -788,6 +804,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             m->stats.fwd_flood++;
         } else {
             m->stats.fwd_dropped++;
+            mon_pkt_drop(m, &pkt, pkt.marked_dnr ? "do-not-retransmit" : "path full");
         }
     } else { /* direct */
         uint8_t n  = pkt_path_hash_count(&pkt);

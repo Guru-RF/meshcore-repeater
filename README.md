@@ -460,7 +460,7 @@ status                uptime, identity, stats, neighbour count
 neighbors             nodes heard (id, name, type, rssi, snr, age)
 channels              configured public channels
 blacklist add|remove|list <name>   ignore a node by name
-monitor [all|public|<chan>|#room]  stream live messages (meshcore-cli only)
+monitor [all|public|<chan>|#room|adverts|drops]  stream live events (meshcore-cli only)
 freq 434.0            retune live
 set tx_power 20       change a parameter (radio keys apply immediately)
 get frequency         read a value
@@ -499,18 +499,26 @@ connection open and streams messages as they pass through the repeater until you
 `Ctrl-C`. Targets:
 
 ```
-meshcore-cli monitor            # everything: public msgs, region hits, drops
+meshcore-cli monitor            # firehose: public msgs, region hits, adverts, drops
 meshcore-cli monitor public     # decrypted text on any public channel
 meshcore-cli monitor MyClub     # decrypted text on the channel named "MyClub"
 meshcore-cli monitor #sysop     # a transport region — opaque, so metadata only
+meshcore-cli monitor adverts    # signed adverts heard (name/type/rssi/snr/loc)
+meshcore-cli monitor drops      # every packet the node discarded, with the reason
 ```
 
-A **public channel** is decrypted (you hold the key), so the message text is
-shown: `12:30:01 [public MyClub] ON4XYZ: hello  (rssi -72 snr 8.0)`. A **`#room`**
-region is relayed *without* the key, so only metadata is available:
-`12:30:04 [room #sysop] relayed  type=0x05  len=42B  (rssi -80 snr 5.0)`. Up to
-four monitors can run at once; a slow/gone client is dropped and never stalls
-forwarding.
+The no-argument `monitor` is the full firehose — everything the node sees; the
+other targets are filtered slices of it. A **public channel** is decrypted (you
+hold the key), so the message text is shown: `12:30:01 [public MyClub] ON4XYZ:
+hello  (rssi -72 snr 8.0)`. A **`#room`** region is relayed *without* the key, so
+only metadata is available: `12:30:04 [room #sysop] relayed  type=0x05  len=42B
+(rssi -80 snr 5.0)`. **`adverts`** shows each signed advert
+(`[advert] 'ON0RFG' type=1  loc 50.85,4.35  (rssi -60 snr 6.0)`); **`drops`**
+shows every discard with its reason — duplicates, parse errors, bad-signature or
+blacklisted adverts, private DMs, unconfigured channels / MAC failures, traces,
+hotspot out-of-scope, path-full (`13:58:25 [drop] type=0x05 chan=0x8B
+unconfigured channel`). Up to four monitors can run at once; a slow/gone client is
+dropped and never stalls forwarding.
 
 **Blacklist / moderation:** `blacklist add <name>` ignores a node by its
 advertised / public-channel name — its adverts are neither relayed nor
