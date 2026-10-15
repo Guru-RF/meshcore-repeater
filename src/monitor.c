@@ -66,15 +66,17 @@ bool monitor_add(mc_monitor *mon, int fd, const char *cmdline)
     else if (!strcasecmp(p, "public"))                  c.kind = MON_PUBLIC;
     else if (!strcasecmp(p, "adverts") || !strcasecmp(p, "advert")) c.kind = MON_ADVERT;
     else if (!strcasecmp(p, "drops")   || !strcasecmp(p, "drop"))   c.kind = MON_DROP;
+    else if (!strcasecmp(p, "tx"))                      c.kind = MON_TX;
     else                                              { c.kind = MON_CHANNEL; snprintf(c.target, sizeof(c.target), "%s", p); }
 
     fcntl(fd, F_SETFL, O_NONBLOCK);
     mon->conn[mon->n++] = c;
 
-    const char *what = c.kind == MON_ALL     ? "all activity (public msgs, region hits, adverts, drops)"
+    const char *what = c.kind == MON_ALL     ? "all activity (public msgs, region hits, adverts, drops, tx)"
                      : c.kind == MON_PUBLIC  ? "all public channels"
                      : c.kind == MON_ADVERT  ? "adverts"
                      : c.kind == MON_DROP    ? "drops"
+                     : c.kind == MON_TX      ? "transmissions"
                      : c.kind == MON_ROOM    ? c.target
                      :                         c.target;
     int len = snprintf(hdr, sizeof(hdr), "# monitoring %s%s - Ctrl-C to stop\n",
@@ -107,6 +109,7 @@ bool monitor_wants_room(const mc_mon_conn_t *c, const char *room)
 
 bool monitor_wants_advert(const mc_mon_conn_t *c) { return c->kind == MON_ALL || c->kind == MON_ADVERT; }
 bool monitor_wants_drop(const mc_mon_conn_t *c)   { return c->kind == MON_ALL || c->kind == MON_DROP; }
+bool monitor_wants_tx(const mc_mon_conn_t *c)     { return c->kind == MON_ALL || c->kind == MON_TX; }
 
 void monitor_public(mc_monitor *mon, const char *chan, const char *text,
                     int rssi, int8_t snr_q)
@@ -172,6 +175,23 @@ void monitor_drop(mc_monitor *mon, uint8_t ptype, const char *reason, int chan_h
     if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
     for (int i = mon->n - 1; i >= 0; i--)              /* 'all' + 'drops' views */
         if (monitor_wants_drop(&mon->conn[i]))
+            mon_write(mon, i, line, (size_t)len);
+}
+
+void monitor_tx(mc_monitor *mon, const char *ptype, bool flood, unsigned len_b,
+                unsigned hops, int power_dbm, unsigned airtime_ms, const char *detail)
+{
+    if (mon->n == 0) return;
+    char t[16]; stamp(t, sizeof(t));
+    char line[600];
+    int len = snprintf(line, sizeof(line), "%s [tx] %s %s %uB %uhop %ddBm %ums%s%s\n",
+                       t, ptype ? ptype : "?", flood ? "flood" : "direct", len_b, hops,
+                       power_dbm, airtime_ms, (detail && *detail) ? "  " : "",
+                       detail ? detail : "");
+    if (len < 0) return;
+    if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
+    for (int i = mon->n - 1; i >= 0; i--)              /* 'all' + 'tx' views */
+        if (monitor_wants_tx(&mon->conn[i]))
             mon_write(mon, i, line, (size_t)len);
 }
 

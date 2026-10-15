@@ -498,7 +498,7 @@ status                uptime, identity, stats, neighbour count
 neighbors             nodes heard (id, name, type, rssi, snr, age)
 channels              configured public channels
 blacklist add|remove|list <name>   ignore a node by name
-monitor [all|public|<chan>|#room|adverts|drops]  stream live events (meshcore-cli only)
+monitor [all|public|<chan>|#room|adverts|drops|tx]  stream live events (meshcore-cli only)
 freq 434.0            retune live
 set tx_power 20       change a parameter (radio keys apply immediately)
 get frequency         read a value
@@ -537,12 +537,13 @@ connection open and streams messages as they pass through the repeater until you
 `Ctrl-C`. Targets:
 
 ```
-meshcore-cli monitor            # firehose: public msgs, region hits, adverts, drops
+meshcore-cli monitor            # firehose: public msgs, region hits, adverts, drops, tx
 meshcore-cli monitor public     # decrypted text on any public channel
 meshcore-cli monitor MyClub     # decrypted text on the channel named "MyClub"
 meshcore-cli monitor #sysop     # a transport region — opaque, so metadata only
 meshcore-cli monitor adverts    # signed adverts heard (name/type/rssi/snr/loc)
 meshcore-cli monitor drops      # every packet the node discarded, with the reason
+meshcore-cli monitor tx         # every packet the node transmitted (forwards + its own)
 ```
 
 The no-argument `monitor` is the full firehose — everything the node sees; the
@@ -555,8 +556,11 @@ only metadata is available: `12:30:04 [room #sysop] relayed  type=0x05  len=42B
 shows every discard with its reason — duplicates, parse errors, bad-signature or
 blacklisted adverts, private DMs, unconfigured channels / MAC failures, traces,
 hotspot out-of-scope, path-full (`13:58:25 [drop] type=0x05 chan=0x8B
-unconfigured channel`). Up to four monitors can run at once; a slow/gone client is
-dropped and never stalls forwarding.
+unconfigured channel`). **`tx`** shows every packet the node put on air — relayed
+traffic and its own pongs, replies and adverts — with route, size, hops, power and
+airtime, plus the text when it is on a public channel (`13:58:26 [tx] GRP_TXT flood
+53B 0hop 22dBm 574ms  [#mesh] ON0RFG: pong rssi -114dBm snr -8.5dB`). Up to four
+monitors can run at once; a slow/gone client is dropped and never stalls forwarding.
 
 **Blacklist / moderation:** `blacklist add <name>` ignores a node by its
 advertised / public-channel name — its adverts are neither relayed nor

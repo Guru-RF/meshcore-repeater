@@ -1319,6 +1319,13 @@ static void test_monitor(void)
                 "MON_DROP wants drops only");
           CHECK(!monitor_wants_public(&m4.conn[0], "AnyChan") && !monitor_wants_room(&m4.conn[1], "#x"),
                 "advert/drop monitors ignore the public + room message streams");
+          CHECK(monitor_add(&m4, dup(r[1]), "monitor tx") && m4.conn[2].kind == MON_TX,
+                "monitor tx -> MON_TX");
+          CHECK(monitor_wants_tx(&m4.conn[2]) && !monitor_wants_drop(&m4.conn[2])
+                && !monitor_wants_public(&m4.conn[2], "AnyChan"),
+                "MON_TX wants transmissions only");
+          CHECK(!monitor_wants_tx(&m4.conn[0]) && !monitor_wants_tx(&m4.conn[1]),
+                "advert/drop monitors ignore transmissions");
           for (int i = 0; i < m4.n; i++) close(m4.conn[i].fd);
           close(r[0]); close(r[1]);
       } }
@@ -1332,6 +1339,7 @@ static void test_monitor(void)
           monitor_region(&m2, "#sysop", 0x05, 42, -80, 20);
           monitor_advert(&m2, "ON0RFG", 1, true, 50.85000, 4.35000, -60, 24);
           monitor_drop(&m2, 0x03, "private unicast (DM)", -1);
+          monitor_tx(&m2, "GRP_TXT", true, 53, 0, 22, 574, "[#mesh] ON0RFG: pong");
           char buf[1024]; ssize_t rr = read(q[0], buf, sizeof(buf) - 1);
           buf[rr > 0 ? rr : 0] = '\0';
           CHECK(strstr(buf, "[public TestChan]") && strstr(buf, "ON4XYZ: hi"),
@@ -1342,6 +1350,8 @@ static void test_monitor(void)
                 "monitor_advert streams name + location");
           CHECK(strstr(buf, "[drop]") && strstr(buf, "private unicast (DM)"),
                 "monitor_drop streams the discard reason");
+          CHECK(strstr(buf, "[tx] GRP_TXT flood 53B 0hop 22dBm 574ms  [#mesh] ON0RFG: pong"),
+                "monitor_tx streams route/size/power/airtime + the text");
           for (int i = 0; i < m2.n; i++) close(m2.conn[i].fd);
           close(q[0]); close(q[1]);
       }

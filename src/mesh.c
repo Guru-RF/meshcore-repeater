@@ -948,6 +948,32 @@ static int pick_due(mc_mesh_t *m, uint64_t now)
     return best;
 }
 
+/* Emit a "[tx]" monitor event for a packet we just transmitted. A group message
+ * on a channel we hold is decrypted so its text shows (our own pong/help/time as
+ * well as the public messages we relay); an advert shows the advertiser's name. */
+static void mon_pkt_tx(mc_mesh_t *m, const mc_packet_t *pkt, int len_b,
+                       int power_dbm, uint32_t airtime_ms)
+{
+    if (!m->mon) return;
+    char detail[MC_MAX_PACKET_PAYLOAD + 48];
+    detail[0] = '\0';
+    uint8_t pt = pkt_payload_type(pkt);
+    const mc_pub_channel_t *ch = NULL;
+    if (pt == PAYLOAD_TYPE_GRP_TXT &&
+        classify_forward(m, pkt, &ch) == FWD_OK_GRP_PUBLIC && ch) {
+        uint8_t plain[MC_MAX_PACKET_PAYLOAD];
+        if (channel_decrypt(ch, pkt, plain, sizeof(plain)) >= 5)
+            snprintf(detail, sizeof(detail), "[%s] %s",
+                     ch->name[0] ? ch->name : "-", (const char *)&plain[5]);
+    } else if (pt == PAYLOAD_TYPE_ADVERT) {
+        char name[32];
+        if (mc_advert_extract(pkt, NULL, name, sizeof(name)) == 0 && name[0])
+            snprintf(detail, sizeof(detail), "'%s'", name);
+    }
+    monitor_tx(m->mon, payload_type_name(pt), pkt_is_route_flood(pkt), (unsigned)len_b,
+               pkt_path_hash_count(pkt), power_dbm, airtime_ms, detail);
+}
+
 void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
 {
     int idx = pick_due(m, now_ms);
@@ -976,6 +1002,7 @@ void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
                          payload_type_name(pkt_payload_type(&e->pkt)),
                          pkt_is_route_flood(&e->pkt) ? "flood" : "direct",
                          n, pkt_path_hash_count(&e->pkt), e->power_dbm, airtime);
+            mon_pkt_tx(m, &e->pkt, n, e->power_dbm, airtime);
         } else {
             log_warn("mesh: TX failed (rc=%d, len=%d)", rc, n);
         }
