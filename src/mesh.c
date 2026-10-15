@@ -94,14 +94,12 @@ static uint32_t flood_backoff_ms(const mc_packet_t *pkt)
     return hal_rng_int(0, 5) * t;
 }
 
-/* Delay before answering a command heard on air (pong, help, #mbox reply).
- * Sent straight away, the reply often lands while the sender is still turning
- * its radio around from TX to RX, so it is missed; MESH_REPLY_DELAY_MS covers
- * that. The flood back-off on top spreads several repeaters answering the same
- * command apart, so CAD lets the later ones defer instead of colliding. */
-static uint32_t reply_delay_ms(const mc_packet_t *pkt)
+/* Delay before answering a command heard on air (pong, help, #mbox reply):
+ * MeshCore's SERVER_RESPONSE_DELAY, so the sender is back in RX, plus a small
+ * jitter. */
+static uint32_t reply_delay_ms(void)
 {
-    return MESH_REPLY_DELAY_MS + flood_backoff_ms(pkt);
+    return MESH_REPLY_DELAY_MS + hal_rng_int(0, 3) * 50;
 }
 
 /* Chip power for packets this node ORIGINATES (adverts, pongs). In hotspot
@@ -462,7 +460,7 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, reply_delay_ms(&pkt), own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m));
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
@@ -511,7 +509,7 @@ static void send_help(mc_mesh_t *m, const mc_pub_channel_t *ch)
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, reply_delay_ms(&pkt), own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m));
     m->stats.help_sent++;
 }
 
@@ -545,7 +543,7 @@ static bool send_routed_reply(mc_mesh_t *m, const mc_packet_t *rx,
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);          /* seed dedup so we don't display/re-forward our own echo */
-    enqueue(m, &pkt, 1, reply_delay_ms(&pkt), own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m));
     return true;
 }
 
@@ -967,7 +965,7 @@ static int pick_due(mc_mesh_t *m, uint64_t now)
 static void mon_pkt_tx(mc_mesh_t *m, const mc_packet_t *pkt, int len_b,
                        int power_dbm, uint32_t airtime_ms)
 {
-    if (!m->mon) return;
+    if (!m->mon || monitor_count(m->mon) == 0) return;   /* nobody watching: skip the decrypt */
     char detail[MC_MAX_PACKET_PAYLOAD + 48];
     detail[0] = '\0';
     uint8_t pt = pkt_payload_type(pkt);

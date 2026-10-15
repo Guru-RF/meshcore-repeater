@@ -366,6 +366,8 @@ static void test_ping_pong(void)
     if (found >= 0) {
         CHECK(mesh.txq[found].due_ms >= rx_at + MESH_REPLY_DELAY_MS,
               "pong held >= %d ms so the pinger is back in RX", MESH_REPLY_DELAY_MS);
+        CHECK(mesh.txq[found].due_ms <= hal_millis() + MESH_REPLY_DELAY_MS + 150,
+              "pong goes out within %d ms (no long back-off)", MESH_REPLY_DELAY_MS + 150);
         mc_packet_t *q = &mesh.txq[found].pkt;
         const mc_pub_channel_t *ch = &cfg.public_channels[0];
         size_t ctl = (size_t)q->payload_len - 3;
