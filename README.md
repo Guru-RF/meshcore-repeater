@@ -108,10 +108,14 @@ Default wiring (matches the reference schematic — RPi 40-pin header):
 | "DATA" LED | activity (out)     | GPIO26  | 37        | `gpio_led_data` |
 
 Set any of these to match your wiring in `meshcore-repeater.conf`. On a
-**Raspberry Pi 5** set `gpio_chip = gpiochip4`.
+**Raspberry Pi 5** the default `gpiochip0` is the RP1 header GPIO on current
+kernels (older ones need `gpio_chip = gpiochip4`; newer ones keep that name as an
+alias).
 
 - **NSS on GPIO21:** because NSS isn't on the hardware CE0, the driver opens SPI
   with `SPI_NO_CS` and toggles GPIO21 around each command. CE0 (GPIO8) is left free.
+  The Raspberry Pi 5's SPI controller doesn't support `SPI_NO_CS`; there the
+  driver falls back to plain mode 0, so CE0 toggles too (harmless, it's unused).
 - **Antenna switch:** `rf_switch = dio2` makes the SX126x raise DIO2 during TX to
   flip the on-module RF switch. If your module instead exposes RXEN/TXEN, set
   `rf_switch = external` and wire `gpio_rxen`/`gpio_txen`.
