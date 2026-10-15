@@ -431,6 +431,31 @@ static void test_tx_failure_resets_radio(void)
     CHECK(left == queued - 1, "the failed packet is dropped, the rest stay queued");
 }
 
+/* Packets the radio heard but could not decode are counted and shown as drops. */
+static void test_rx_errors(void)
+{
+    printf("[corrupt receptions are counted and monitored]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    mc_config_t cfg; config_defaults(&cfg);
+    mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
+    mc_monitor mon; monitor_init(&mon);
+    mesh.mon = &mon;
+    int q[2];
+    if (pipe(q) != 0) { CHECK(0, "pipe() for rx-error test"); return; }
+    monitor_add(&mon, dup(q[1]), "monitor drops");
+
+    mesh_on_rx_error(&mesh, SX126X_RX_CRC_ERR, -118, -50);
+    mesh_on_rx_error(&mesh, SX126X_RX_HDR_ERR, 0, 0);
+    CHECK(mesh.stats.rx_crc_err == 1 && mesh.stats.rx_hdr_err == 1 && mesh.stats.rx_total == 0,
+          "CRC + header errors counted apart from good packets");
+    char buf[512]; ssize_t rr = read(q[0], buf, sizeof(buf) - 1);
+    buf[rr > 0 ? rr : 0] = '\0';
+    CHECK(strstr(buf, "CRC error (rssi -118 snr -12.5)") && strstr(buf, "corrupt LoRa header"),
+          "both show in the drops monitor, the CRC error with its signal");
+    for (int i = 0; i < mon.n; i++) close(mon.conn[i].fd);
+    close(q[0]); close(q[1]);
+}
+
 static void test_ping_channel(void)
 {
     printf("[ping restricted to the built-in #mesh channel]\n");
@@ -1446,6 +1471,7 @@ int main(void)
     test_mesh_policy();
     test_ping_pong();
     test_tx_failure_resets_radio();
+    test_rx_errors();
     test_ping_channel();
     test_probe();
     test_mbox();

@@ -556,7 +556,9 @@ only metadata is available: `12:30:04 [room #sysop] relayed  type=0x05  len=42B
 shows every discard with its reason — duplicates, parse errors, bad-signature or
 blacklisted adverts, private DMs, unconfigured channels / MAC failures, traces,
 hotspot out-of-scope, path-full (`13:58:25 [drop] type=0x05 chan=0x8B
-unconfigured channel`). **`tx`** shows every packet the node put on air — relayed
+unconfigured channel`) — and packets the radio heard but could not decode
+(`[drop] type=0xFF  CRC error (rssi -118 snr -12.5)`, `corrupt LoRa header`),
+which tell a weak or distorted signal apart from one that never arrived. **`tx`** shows every packet the node put on air — relayed
 traffic and its own pongs, replies and adverts — with route, size, hops, power and
 airtime, plus the text when it is on a public channel (`13:58:26 [tx] GRP_TXT flood
 53B 0hop 22dBm 574ms  [#mesh] ON0RFG: pong rssi -114dBm snr -8.5dB`). Up to four

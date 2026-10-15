@@ -461,7 +461,8 @@ int sx126x_start_rx(void)
 {
     sx_set_standby(STDBY_RC);
     sx_clear_irq(IRQ_ALL);
-    sx_set_dio_irq(IRQ_RX_DONE | IRQ_CRC_ERR, IRQ_RX_DONE | IRQ_CRC_ERR, 0, 0);
+    sx_set_dio_irq(IRQ_RX_DONE | IRQ_CRC_ERR | IRQ_HEADER_ERR,
+                   IRQ_RX_DONE | IRQ_CRC_ERR | IRQ_HEADER_ERR, 0, 0);
     hal_rf_switch(RF_SW_RX);
     /* SetRx with 0xFFFFFF = continuous receive */
     return sx_write_cmd(OP_SET_RX, (uint8_t[]){ 0xFF, 0xFF, 0xFF }, 3);
@@ -486,8 +487,15 @@ int sx126x_poll_rx(uint8_t *buf, size_t bufsz, size_t *len,
 
     if (irq & IRQ_RX_DONE) {
         if (irq & IRQ_CRC_ERR) {
+            /* a packet arrived but is corrupt: report its signal, drop the data */
+            uint8_t ps[3] = {0};
+            sx_read_cmd(OP_GET_PACKET_STATUS, ps, 3);
+            if (rssi_dbm)
+                *rssi_dbm = (int16_t)(-(int)ps[0] / 2);
+            if (snr_q)
+                *snr_q = (int8_t)ps[1];
             sx_clear_irq(IRQ_ALL);
-            return 0; /* dropped: bad CRC */
+            return SX126X_RX_CRC_ERR;
         }
         uint8_t st[2] = {0};
         if (sx_read_cmd(OP_GET_RX_BUF_STATUS, st, 2) != 0) {
@@ -512,7 +520,14 @@ int sx126x_poll_rx(uint8_t *buf, size_t bufsz, size_t *len,
             *snr_q = (int8_t)ps[1]; /* signed quarter-dB */
 
         sx_clear_irq(IRQ_ALL);
-        return 1;
+        return SX126X_RX_OK;
+    }
+
+    /* a LoRa header was detected but failed its CRC (continuous RX keeps
+     * listening by itself) */
+    if (irq & IRQ_HEADER_ERR) {
+        sx_clear_irq(IRQ_ALL);
+        return SX126X_RX_HDR_ERR;
     }
 
     /* spurious / timeout */

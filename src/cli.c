@@ -100,10 +100,11 @@ static void cmd_status(cli_ctx_t *ctx)
            ctx->cfg->frequency, ctx->cfg->spreading_factor, ctx->cfg->bandwidth,
            ctx->cfg->coding_rate, ctx->cfg->tx_power, ctx->cfg->sync_word,
            ctx->cfg->use_cad ? "on" : "off", ctx->cfg->forward ? "on" : "off");
-    printf("rx        : total %llu  dup %llu  bad %llu  adverts %llu (bad %llu)\n",
+    printf("rx        : total %llu  dup %llu  bad %llu  adverts %llu (bad %llu)  crc-err %llu  hdr-err %llu\n",
            (unsigned long long)s->rx_total, (unsigned long long)s->rx_dup,
            (unsigned long long)s->rx_bad_parse, (unsigned long long)s->rx_advert,
-           (unsigned long long)s->rx_advert_bad);
+           (unsigned long long)s->rx_advert_bad, (unsigned long long)s->rx_crc_err,
+           (unsigned long long)s->rx_hdr_err);
     printf("forward   : flood %llu  direct %llu  dropped %llu  trace %llu\n",
            (unsigned long long)s->fwd_flood, (unsigned long long)s->fwd_direct,
            (unsigned long long)s->fwd_dropped, (unsigned long long)s->trace_seen);

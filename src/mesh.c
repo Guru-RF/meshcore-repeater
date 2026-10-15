@@ -774,6 +774,19 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
     return true;
 }
 
+void mesh_on_rx_error(mc_mesh_t *m, int kind, int16_t rssi_dbm, int8_t snr_q)
+{
+    char reason[64];
+    if (kind == SX126X_RX_CRC_ERR) {
+        m->stats.rx_crc_err++;
+        snprintf(reason, sizeof(reason), "CRC error (rssi %d snr %.1f)", rssi_dbm, snr_q / 4.0);
+    } else {
+        m->stats.rx_hdr_err++;
+        snprintf(reason, sizeof(reason), "corrupt LoRa header");
+    }
+    if (m->mon) monitor_drop(m->mon, 0xFF, reason, -1);
+}
+
 void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
                   int16_t rssi_dbm, int8_t snr_q)
 {

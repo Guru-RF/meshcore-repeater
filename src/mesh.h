@@ -34,6 +34,8 @@
 typedef struct {
     uint64_t rx_total;
     uint64_t rx_bad_parse;
+    uint64_t rx_crc_err;      /* packets heard but failed their payload CRC */
+    uint64_t rx_hdr_err;      /* LoRa headers detected but corrupt */
     uint64_t rx_dup;
     uint64_t rx_advert;
     uint64_t rx_advert_bad;
@@ -146,6 +148,10 @@ void mesh_service_timeofday(mc_mesh_t *m, uint64_t now_ms);
 /* Handle a freshly received raw packet (rssi/snr from the radio). */
 void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
                   int16_t rssi_dbm, int8_t snr_q);
+
+/* Account a packet the radio heard but could not deliver: SX126X_RX_CRC_ERR
+ * (payload CRC failed; rssi/snr valid) or SX126X_RX_HDR_ERR (corrupt header). */
+void mesh_on_rx_error(mc_mesh_t *m, int kind, int16_t rssi_dbm, int8_t snr_q);
 
 /* Transmit any due queue entries (handles CAD/backoff). Call every loop. */
 void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms);

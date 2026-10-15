@@ -265,13 +265,15 @@ int main(int argc, char **argv)
         int16_t rssi = 0;
         int8_t snr = 0;
         int r = sx126x_poll_rx(buf, sizeof(buf), &rlen, &rssi, &snr);
-        if (r == 1) {
+        if (r == SX126X_RX_OK) {
             log_debug("rx %zu bytes  rssi=%d snr=%.2f", rlen, rssi, snr / 4.0);
             if (rx_node)
                 link_relay(&link, buf, rlen, rssi, snr);   /* remote ear -> TX node */
             else
                 mesh_on_recv(&mesh, buf, rlen, rssi, snr);
             activity = true;
+        } else if (r == SX126X_RX_CRC_ERR || r == SX126X_RX_HDR_ERR) {
+            mesh_on_rx_error(&mesh, r, rssi, snr);         /* heard, but corrupt */
         }
 
         /* 1b. inject frames relayed from remote RX nodes (TX node only) */

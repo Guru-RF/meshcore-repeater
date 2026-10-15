@@ -46,10 +46,14 @@ int  sx126x_start_rx(void);
 
 /*
  * Poll for a received packet (non-blocking).
- * Returns 1 and fills buf/len/rssi/snr if a CRC-good packet arrived,
- * 0 if nothing (or a CRC-error packet was discarded), <0 on error.
- * snr_q is SNR in quarter-dB (signed).
+ * Returns SX126X_RX_OK and fills buf/len/rssi/snr if a CRC-good packet arrived;
+ * SX126X_RX_CRC_ERR (rssi/snr filled, no data) if a packet arrived but failed
+ * its payload CRC; SX126X_RX_HDR_ERR if a LoRa header was detected but failed
+ * its own check; 0 if nothing; <0 on error. snr_q is SNR in quarter-dB (signed).
  */
+#define SX126X_RX_OK       1
+#define SX126X_RX_CRC_ERR  2
+#define SX126X_RX_HDR_ERR  3
 int  sx126x_poll_rx(uint8_t *buf, size_t bufsz, size_t *len,
                     int16_t *rssi_dbm, int8_t *snr_q);
 
