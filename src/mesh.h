@@ -29,6 +29,7 @@
 #define MESH_SEEN_SIZE      160   /* MeshCore MAX_PACKET_HASHES (128+32) */
 #define MESH_TXQ_SIZE        24
 #define MESH_MAX_NEIGHBORS   96
+#define MESH_REPLY_DELAY_MS 300   /* MeshCore SERVER_RESPONSE_DELAY: let the sender get back to RX */
 
 typedef struct {
     uint64_t rx_total;

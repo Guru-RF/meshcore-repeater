@@ -353,6 +353,7 @@ static void test_ping_pong(void)
     mc_packet_t ping;
     build_public_text(&cfg, "Alice: ping", &ping);
     int n = pkt_serialize(&ping, raw, sizeof(raw));
+    uint64_t rx_at = hal_millis();
     mesh_on_recv(&mesh, raw, (size_t)n, -70, 20);
     CHECK(mesh.stats.ping_seen == 1 && mesh.stats.pong_sent == 1, "ping seen -> pong sent");
     CHECK(mesh.stats.fwd_grp_public == 1, "the ping itself was forwarded (public)");
@@ -363,6 +364,8 @@ static void test_ping_pong(void)
         if (mesh.txq[k].used && pkt_payload_type(&mesh.txq[k].pkt) == PAYLOAD_TYPE_GRP_TXT) { found = k; break; }
     CHECK(found >= 0, "pong enqueued for TX");
     if (found >= 0) {
+        CHECK(mesh.txq[found].due_ms >= rx_at + MESH_REPLY_DELAY_MS,
+              "pong held >= %d ms so the pinger is back in RX", MESH_REPLY_DELAY_MS);
         mc_packet_t *q = &mesh.txq[found].pkt;
         const mc_pub_channel_t *ch = &cfg.public_channels[0];
         size_t ctl = (size_t)q->payload_len - 3;
@@ -485,9 +488,9 @@ static void test_probe(void)
       n = pkt_serialize(&p, raw, sizeof(raw));
       mesh_on_recv(&m, raw, (size_t)n, -60, 24);
       CHECK(m.probe_remaining == 3, "authorised 'probe 2 3' -> 3 pending");
-      uint64_t t0 = m.probe_next_ms;                    /* first probe is due now */
+      uint64_t t0 = m.probe_next_ms;                    /* first probe is due at t0 */
       mesh_service_probe(&m, t0);
-      CHECK(m.stats.probes_sent == 1 && m.probe_remaining == 2, "first probe sent immediately");
+      CHECK(m.stats.probes_sent == 1 && m.probe_remaining == 2, "first probe sent when due");
       mesh_service_probe(&m, t0 + 1000);                /* 1s < 2s interval */
       CHECK(m.stats.probes_sent == 1, "second probe waits for the interval");
       mesh_service_probe(&m, t0 + 2000);                /* interval elapsed */

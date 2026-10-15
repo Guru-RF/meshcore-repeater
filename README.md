@@ -61,6 +61,7 @@ The forwarding constants match MeshCore (`Mesh.cpp`):
 | dedup ring size        | 160 packet hashes (8 bytes each) |
 | flood retransmit delay | `rand(0..5) × (airtime × 1.04 / 2)` ms |
 | direct retransmit delay| 0 ms (highest priority) |
+| command reply delay    | `300 + rand(0..5) × (airtime × 1.04 / 2)` ms (pong, help, `#mbox`) |
 | CAD-busy backoff       | `rand(1..4) × 120` ms |
 | path bound             | `(hops+1) × hash_size ≤ 64` |
 

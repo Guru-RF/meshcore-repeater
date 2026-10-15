@@ -85,6 +85,25 @@ static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority,
     log_warn("mesh: TX queue full, dropping packet (type=%u)", pkt_payload_type(pkt));
 }
 
+/* Flood back-off: rand(0..5) slots of half the packet's airtime (+4%), as
+ * MeshCore's Mesh::getRetransmitDelay. */
+static uint32_t flood_backoff_ms(const mc_packet_t *pkt)
+{
+    uint32_t airtime = sx126x_airtime_ms((size_t)pkt_raw_length(pkt));
+    uint32_t t = (airtime * 52 / 50) / 2;
+    return hal_rng_int(0, 5) * t;
+}
+
+/* Delay before answering a command heard on air (pong, help, #mbox reply).
+ * Sent straight away, the reply often lands while the sender is still turning
+ * its radio around from TX to RX, so it is missed; MESH_REPLY_DELAY_MS covers
+ * that. The flood back-off on top spreads several repeaters answering the same
+ * command apart, so CAD lets the later ones defer instead of colliding. */
+static uint32_t reply_delay_ms(const mc_packet_t *pkt)
+{
+    return MESH_REPLY_DELAY_MS + flood_backoff_ms(pkt);
+}
+
 /* Chip power for packets this node ORIGINATES (adverts, pongs). In hotspot
  * mode use the "high" level so they reach the repeater network. */
 static int8_t own_tx_power(const mc_mesh_t *m)
@@ -443,7 +462,7 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));  /* small jitter */
+    enqueue(m, &pkt, 1, reply_delay_ms(&pkt), own_tx_power(m));
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
@@ -492,7 +511,7 @@ static void send_help(mc_mesh_t *m, const mc_pub_channel_t *ch)
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(&pkt), own_tx_power(m));
     m->stats.help_sent++;
 }
 
@@ -526,7 +545,7 @@ static bool send_routed_reply(mc_mesh_t *m, const mc_packet_t *rx,
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);          /* seed dedup so we don't display/re-forward our own echo */
-    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(&pkt), own_tx_power(m));
     return true;
 }
 
@@ -618,7 +637,7 @@ void mesh_start_probe(mc_mesh_t *m, const mc_pub_channel_t *ch, int secs, int co
     m->probe_total       = count;
     m->probe_remaining   = count;
     m->probe_seq         = 0;
-    m->probe_next_ms     = hal_millis();                 /* first one right away */
+    m->probe_next_ms     = hal_millis() + MESH_REPLY_DELAY_MS; /* first one once the operator is back in RX */
     log_info("probe: %d x every %ds on '%s'", count, secs, ch->name[0] ? ch->name : "-");
 }
 
@@ -892,12 +911,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             mc_identity_copy_hash(m->id, &pkt.path[n * hs], hs);
             pkt_set_path_hash_count(&pkt, (uint8_t)(n + 1));
 
-            uint32_t raw_len = (uint32_t)pkt_raw_length(&pkt);
-            uint32_t airtime = sx126x_airtime_ms(raw_len);
-            uint32_t t = (airtime * 52 / 50) / 2;
-            uint32_t delay = hal_rng_int(0, 5) * t;
-
-            enqueue(m, &pkt, (uint8_t)(n + 1), delay, tx_power); /* closer sources = higher priority */
+            enqueue(m, &pkt, (uint8_t)(n + 1), flood_backoff_ms(&pkt), tx_power); /* closer sources = higher priority */
             m->stats.fwd_flood++;
         } else {
             m->stats.fwd_dropped++;
