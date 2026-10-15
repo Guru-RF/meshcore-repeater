@@ -113,10 +113,10 @@ Set any of these to match your wiring in `meshcore-repeater.conf`. On a
 kernels (older ones need `gpio_chip = gpiochip4`; newer ones keep that name as an
 alias).
 
-- **NSS on GPIO21:** because NSS isn't on the hardware CE0, the driver opens SPI
-  with `SPI_NO_CS` and toggles GPIO21 around each command. CE0 (GPIO8) is left free.
-  The Raspberry Pi 5's SPI controller doesn't support `SPI_NO_CS`; there the
-  driver falls back to plain mode 0, so CE0 toggles too (harmless, it's unused).
+- **NSS on GPIO21:** NSS isn't on the hardware CE0, so the driver toggles GPIO21
+  around each command itself. SPI runs in plain mode 0 (no `SPI_NO_CS`, which the
+  Raspberry Pi 5's controller rejects), so CE0 (GPIO8) toggles too — harmless,
+  nothing on the hat uses it.
 - **Antenna switch:** `rf_switch = dio2` makes the SX126x raise DIO2 during TX to
   flip the on-module RF switch. If your module instead exposes RXEN/TXEN, set
   `rf_switch = external` and wire `gpio_rxen`/`gpio_txen`.

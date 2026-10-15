@@ -147,9 +147,10 @@ static void cmd_status(cli_ctx_t *ctx)
                ctx->cfg->hotspot_power_high, ctx->cfg->hotspot_power_low);
     else
         printf("role      : repeater\n");
-    printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu\n",
+    printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu  failed %llu  radio-resets %llu\n",
            (unsigned long long)s->tx_total, (unsigned long long)s->tx_cad_busy,
-           (unsigned long long)s->tx_queue_full, (unsigned long long)s->adverts_sent);
+           (unsigned long long)s->tx_queue_full, (unsigned long long)s->adverts_sent,
+           (unsigned long long)s->tx_failed, (unsigned long long)s->radio_resets);
     printf("neighbours: %d\n", mesh_neighbor_count(ctx->mesh));
     fflush(stdout);
 }

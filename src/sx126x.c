@@ -401,6 +401,18 @@ int sx126x_init(const sx126x_cfg_t *cfg)
     return 0;
 }
 
+/* Hardware-reset the chip and re-run the bring-up with the CURRENT settings
+ * (live retunes included), then return to RX. Recovers a radio that stopped
+ * signalling, e.g. a TX that never raised TxDone. */
+int sx126x_reinit(void)
+{
+    sx126x_cfg_t cur = g_cfg;
+    int rc = sx126x_init(&cur);
+    if (rc == 0)
+        rc = sx126x_start_rx();
+    return rc;
+}
+
 int sx126x_set_frequency(double freq_mhz)
 {
     g_cfg.freq_mhz = freq_mhz;

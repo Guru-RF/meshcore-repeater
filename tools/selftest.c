@@ -400,6 +400,37 @@ static void test_ping_pong(void)
     CHECK(mesh3.stats.pong_sent == 0, "ping_pong=off -> no pong");
 }
 
+/* The mock radio never raises TxDone, so every transmit times out - exactly a
+ * wedged chip. One failure must be counted, drop the packet and reset the radio. */
+static void test_tx_failure_resets_radio(void)
+{
+    printf("[a failed transmit resets the radio]\n");
+    mc_identity_t id; mc_identity_generate(&id);
+    mc_config_t cfg; config_defaults(&cfg);
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    cfg.ping_pong = true;
+    cfg.ping_channel[0] = '\0';
+    cfg.use_cad = false;                   /* straight to TX (mock CAD would time out too) */
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
+    uint8_t raw[MC_MAX_TRANS_UNIT];
+
+    mc_packet_t ping;
+    build_public_text(&cfg, "Al: ping", &ping);
+    int n = pkt_serialize(&ping, raw, sizeof(raw));
+    mesh_on_recv(&mesh, raw, (size_t)n, -70, 20);
+    int queued = 0;
+    for (int k = 0; k < MESH_TXQ_SIZE; k++) queued += mesh.txq[k].used;
+
+    mesh_service_tx(&mesh, hal_millis() + 60000);   /* first due packet; TX times out */
+    int left = 0;
+    for (int k = 0; k < MESH_TXQ_SIZE; k++) left += mesh.txq[k].used;
+    CHECK(mesh.stats.tx_total == 0 && mesh.stats.tx_failed == 1,
+          "timed-out transmit counted as failed, not sent");
+    CHECK(mesh.stats.radio_resets == 1, "one failure -> the radio is reset");
+    CHECK(left == queued - 1, "the failed packet is dropped, the rest stay queued");
+}
+
 static void test_ping_channel(void)
 {
     printf("[ping restricted to the built-in #mesh channel]\n");
@@ -1414,6 +1445,7 @@ int main(void)
     test_mesh_direct();
     test_mesh_policy();
     test_ping_pong();
+    test_tx_failure_resets_radio();
     test_ping_channel();
     test_probe();
     test_mbox();

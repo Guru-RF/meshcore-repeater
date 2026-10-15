@@ -1004,7 +1004,16 @@ void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
                          n, pkt_path_hash_count(&e->pkt), e->power_dbm, airtime);
             mon_pkt_tx(m, &e->pkt, n, e->power_dbm, airtime);
         } else {
-            log_warn("mesh: TX failed (rc=%d, len=%d)", rc, n);
+            /* A healthy radio always finishes within the airtime, so a failed TX
+             * means the chip is wedged - and a wedged chip is usually deaf too.
+             * Reset it now rather than waiting for more failures: a deaf
+             * repeater originates little (an advert per interval), so a
+             * threshold could leave it stuck for hours. */
+            m->stats.tx_failed++;
+            m->stats.radio_resets++;
+            log_warn("mesh: TX failed (rc=%d, len=%d) - resetting the radio", rc, n);
+            if (sx126x_reinit() != 0)
+                log_err("mesh: radio re-init failed - check the radio hardware");
         }
     }
     e->used = false; /* one shot - drop on serialise failure too */

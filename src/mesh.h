@@ -61,6 +61,8 @@ typedef struct {
     uint64_t tx_total;
     uint64_t tx_cad_busy;
     uint64_t tx_queue_full;
+    uint64_t tx_failed;       /* transmits that never completed (no TxDone) */
+    uint64_t radio_resets;    /* radio re-inits after a failed transmit */
     uint64_t adverts_sent;
 } mesh_stats_t;
 

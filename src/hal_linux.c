@@ -257,20 +257,14 @@ int hal_init(const hal_config_t *cfg)
         log_err("hal: cannot open %s: %s (is SPI enabled?)", cfg->spi_dev, strerror(errno));
         return -1;
     }
-    /* SPI mode 0, and SPI_NO_CS because we drive NSS manually on a GPIO.
-     * Not every controller supports SPI_NO_CS: the Pi 5's RP1 (dw_spi_mmio)
-     * rejects it with EINVAL. Fall back to plain mode 0 there - the hardware
-     * CE then toggles alongside our NSS, which is harmless as long as the
+    /* Plain SPI mode 0. We drive NSS manually on a GPIO, but deliberately do
+     * NOT ask for SPI_NO_CS: the Pi 5's RP1 controller (dw_spi_mmio) rejects it
+     * and the kernel logs "unsupported mode bits" on every start. The hardware
+     * CE just toggles alongside our NSS, which is harmless as long as the
      * radio's NSS is not wired to that CE pin. */
-    uint8_t mode = SPI_MODE_0 | SPI_NO_CS;
+    uint8_t mode = SPI_MODE_0;
     uint8_t bits = 8;
-    int mrc = ioctl(g_spi_fd, SPI_IOC_WR_MODE, &mode);
-    if (mrc < 0 && errno == EINVAL) {
-        log_info("hal: %s does not support SPI_NO_CS, using hardware CE too", cfg->spi_dev);
-        mode = SPI_MODE_0;
-        mrc = ioctl(g_spi_fd, SPI_IOC_WR_MODE, &mode);
-    }
-    if (mrc < 0 ||
+    if (ioctl(g_spi_fd, SPI_IOC_WR_MODE, &mode) < 0 ||
         ioctl(g_spi_fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0 ||
         ioctl(g_spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &g_spi_speed) < 0) {
         log_err("hal: SPI configuration failed: %s", strerror(errno));

@@ -32,6 +32,8 @@ typedef struct {
 
 /* Reset + full init from cfg. Returns 0 on success, <0 on error. */
 int  sx126x_init(const sx126x_cfg_t *cfg);
+/* Reset + re-init with the current (possibly live-changed) settings, then RX. */
+int  sx126x_reinit(void);
 
 /* Re-tune (standby, set freq, image-calibrate). Returns 0 on success. */
 int  sx126x_set_frequency(double freq_mhz);
