@@ -32,3 +32,6 @@ pio device monitor
 
 Pair it with `meshcore-cli probe 3 30` on the repeater. That sends numbered
 messages on #mesh, so the counts and gaps show the delivery rate.
+
+The first run of this sniffer, on a T-LoRa Pager and a T-Deck, is written up in
+[docs/lilygo-433-noise.md](../../docs/lilygo-433-noise.md).

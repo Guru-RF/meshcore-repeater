@@ -416,6 +416,13 @@ probe_allow = ON6URE*      # who may run it (repeatable; empty = nobody)
 probe_allow = OR7F*
 ```
 
+**A handheld misses pongs or probes but the repeater hears it?** Check the
+handheld first. LilyGO 433 MHz handhelds (T-LoRa Pager, T-Deck) are deafened
+15–35 dB by their own electronics: see
+[docs/lilygo-433-noise.md](docs/lilygo-433-noise.md). To measure a handheld's
+noise floor and what it decodes, flash it with [`tools/rx-sniffer`](tools/rx-sniffer/)
+and run a probe.
+
 ### `time` / `date` (clock for clockless devices)
 
 With `timeofday = true` (the default), sending **`time`** or **`date`** on `#mesh`
@@ -749,6 +756,9 @@ src/
   crypto/         vendored TweetNaCl (Ed25519/SHA-512) + B-Con SHA-256 + tiny-AES-128
 tools/
   selftest.c      host unit tests       mock_hal.c   no-hardware HAL
+  rx-sniffer/     RX-only PHY sniffer firmware for LilyGO SX1262 handhelds
+docs/
+  lilygo-433-noise.md   field test: LilyGO 433 MHz handhelds vs their own noise
 ```
 
 ## Credits / licences
