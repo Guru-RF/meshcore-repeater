@@ -4,6 +4,7 @@ meshcore-cli
 selftest
 *.o
 *.d
+src/version.h
 
 # runtime identity (private key!) and local config overrides
 repeater.key

@@ -15,6 +15,7 @@
 #include "aprsis.h"
 #include "monitor.h"
 #include "link.h"
+#include "backbone.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -229,13 +230,27 @@ int main(int argc, char **argv)
      * transmit, even if the link is (transiently) down. */
     bool rx_node = (strcasecmp(cfg.link_mode, "rx") == 0);
 
+    /* IP backbone to the hub (optional). A fallback: a misconfigured or
+     * unreachable hub only means no backbone, never a stopped repeater. */
+    mc_backbone bb;
+    if (cfg.backbone_enable && (rx_node || cfg.role == ROLE_HOTSPOT)) {
+        log_warn("backbone: not available on a %s - backbone off",
+                 rx_node ? "split-RX node (link_mode = rx)" : "hotspot");
+        memset(&bb, 0, sizeof(bb));                           /* BB_OFF */
+        bb.fd = -1;
+    } else {
+        backbone_init(&bb, &cfg, &id, &mesh);
+    }
+    if (bb.state != BB_OFF)
+        mesh.bb = &bb;
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
 
     bool running = true;
     cli_ctx_t ctx = {
-        .cfg = &cfg, .mesh = &mesh, .id = &id, .link = &link,
+        .cfg = &cfg, .mesh = &mesh, .id = &id, .link = &link, .bb = &bb,
         .config_path = config_path, .radio_ready = true, .running = &running,
     };
     cli_banner(&ctx);
@@ -267,10 +282,12 @@ int main(int argc, char **argv)
         int r = sx126x_poll_rx(buf, sizeof(buf), &rlen, &rssi, &snr);
         if (r == SX126X_RX_OK) {
             log_debug("rx %zu bytes  rssi=%d snr=%.2f", rlen, rssi, snr / 4.0);
-            if (rx_node)
+            if (rx_node) {
                 link_relay(&link, buf, rlen, rssi, snr);   /* remote ear -> TX node */
-            else
-                mesh_on_recv(&mesh, buf, rlen, rssi, snr);
+            } else {
+                int disp = mesh_on_recv(&mesh, buf, rlen, rssi, snr);
+                backbone_observe(mesh.bb, buf, rlen, rssi, snr, 0, disp);
+            }
             activity = true;
         } else if (r == SX126X_RX_CRC_ERR || r == SX126X_RX_HDR_ERR) {
             mesh_on_rx_error(&mesh, r, rssi, snr);         /* heard, but corrupt */
@@ -281,7 +298,8 @@ int main(int argc, char **argv)
             uint8_t lb[MC_MAX_TRANS_UNIT];
             size_t llen; int16_t lrssi; int8_t lsnr;
             while (link_recv(&link, lb, sizeof(lb), &llen, &lrssi, &lsnr) == 1) {
-                mesh_on_recv(&mesh, lb, llen, lrssi, lsnr);
+                int disp = mesh_on_recv(&mesh, lb, llen, lrssi, lsnr);
+                backbone_observe(mesh.bb, lb, llen, lrssi, lsnr, 0, disp);
                 activity = true;
             }
         }
@@ -314,7 +332,7 @@ int main(int argc, char **argv)
         }
 
         /* 4. local CLI + control socket + APRS-IS + monitors + IP link (non-blocking) */
-        struct pollfd pfd[4 + MC_MAX_MONITORS];
+        struct pollfd pfd[5 + MC_MAX_MONITORS];
         int nfds = 0;
         int stdin_slot = -1, ctrl_slot = -1, aprs_slot = -1;
         short aprs_ev = 0;
@@ -324,6 +342,8 @@ int main(int argc, char **argv)
         if (aprs_fd >= 0) { aprs_slot = nfds; pfd[nfds].fd = aprs_fd; pfd[nfds].events = aprs_ev; nfds++; }
         int link_fd = link_pollfd(&link);
         if (link_fd >= 0) { pfd[nfds].fd = link_fd; pfd[nfds].events = POLLIN; nfds++; }  /* wakes on relayed frames */
+        int bb_fd = backbone_pollfd(&bb);
+        if (bb_fd >= 0) { pfd[nfds].fd = bb_fd; pfd[nfds].events = POLLIN; nfds++; }    /* wakes on hub datagrams */
         int mon_slot = nfds;
         int mon_count = monitor_pollfds(&monitor, &pfd[nfds], MC_MAX_MONITORS);
         nfds += mon_count;
@@ -343,6 +363,8 @@ int main(int argc, char **argv)
         /* advance the APRS-IS client every iteration (connect/beacon timers) */
         if (mesh.aprs)
             aprsis_service(mesh.aprs, now, aprs_slot >= 0 ? pfd[aprs_slot].revents : 0);
+        /* the backbone: DNS, handshake, keepalives, reports, frames from the hub */
+        backbone_service(&bb, hal_millis());
     }
 
     if (ctrl_fd >= 0)
@@ -350,6 +372,7 @@ int main(int argc, char **argv)
     if (mesh.aprs)
         aprsis_close(mesh.aprs);
     link_close(&link);
+    backbone_close(&bb);
 
     log_info("shutting down");
     hal_led_data(false);

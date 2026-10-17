@@ -65,6 +65,15 @@ void config_defaults(mc_config_t *cfg)
     cfg->link_peer[0]    = '\0';
     cfg->link_port       = 4404;       /* split RX/TX UDP link port */
 
+    /* IP backbone (off by default; needs the hub's public key) */
+    cfg->backbone_enable  = false;
+    snprintf(cfg->backbone_host, sizeof(cfg->backbone_host), "%s", "be.mesh73.net");
+    cfg->backbone_port    = 4405;
+    cfg->backbone_have_hub_key = false;
+    cfg->backbone_observe = true;
+    cfg->backbone_bridge  = false;
+    cfg->backbone_rate    = 30;
+
     /* APRS-IS RX iGate (off by default; own beacon reuses latitude/longitude) */
     cfg->aprs_enable         = false;
     cfg->aprs_call[0]        = '\0';
@@ -492,6 +501,20 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "link_key"))  { snprintf(cfg->link_key,  sizeof(cfg->link_key),  "%s", val); return 0; }
     if (!strcasecmp(key, "link_peer")) { snprintf(cfg->link_peer, sizeof(cfg->link_peer), "%s", val); return 0; }
     if (!strcasecmp(key, "link_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->link_port = (uint16_t)u; return 0; }
+    if (!strcasecmp(key, "backbone"))         { if (!parse_bool(val, &b)) return -2; cfg->backbone_enable = b; return 0; }
+    if (!strcasecmp(key, "backbone_host"))    { snprintf(cfg->backbone_host, sizeof(cfg->backbone_host), "%s", val); return 0; }
+    if (!strcasecmp(key, "backbone_port"))    { if (!parse_u32(val, &u) || u == 0 || u > 65535) return -2; cfg->backbone_port = (uint16_t)u; return 0; }
+    if (!strcasecmp(key, "backbone_hub_key")) {
+        if (val[0] == '\0') { cfg->backbone_have_hub_key = false; return 0; }   /* unset */
+        uint8_t k[32];
+        if (strlen(val) != 64 || hex2bin(val, k, sizeof(k)) != 32) return -2;
+        memcpy(cfg->backbone_hub_key, k, 32);
+        cfg->backbone_have_hub_key = true;
+        return 0;
+    }
+    if (!strcasecmp(key, "backbone_observe")) { if (!parse_bool(val, &b)) return -2; cfg->backbone_observe = b; return 0; }
+    if (!strcasecmp(key, "backbone_bridge"))  { if (!parse_bool(val, &b)) return -2; cfg->backbone_bridge = b; return 0; }
+    if (!strcasecmp(key, "backbone_rate"))    { if (!parse_u32(val, &u) || u < 1 || u > 600) return -2; cfg->backbone_rate = u; return 0; }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
     if (!strcasecmp(key, "room"))           { return add_room(cfg, val); }
     if (!strcasecmp(key, "blacklist")) { return config_blacklist_add(cfg, val) < 0 ? -2 : 0; }
@@ -574,6 +597,17 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "link_key"))         { snprintf(out, outsz, "%s", cfg->link_key[0] ? "set" : ""); return 0; }
     if (!strcasecmp(key, "link_peer"))        { snprintf(out, outsz, "%s", cfg->link_peer); return 0; }
     if (!strcasecmp(key, "link_port"))        { snprintf(out, outsz, "%u", cfg->link_port); return 0; }
+    if (!strcasecmp(key, "backbone"))         { snprintf(out, outsz, "%s", cfg->backbone_enable ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "backbone_host"))    { snprintf(out, outsz, "%s", cfg->backbone_host); return 0; }
+    if (!strcasecmp(key, "backbone_port"))    { snprintf(out, outsz, "%u", cfg->backbone_port); return 0; }
+    if (!strcasecmp(key, "backbone_hub_key")) {
+        if (cfg->backbone_have_hub_key) bin2hex(cfg->backbone_hub_key, 32, out, outsz);
+        else if (outsz) out[0] = '\0';
+        return 0;
+    }
+    if (!strcasecmp(key, "backbone_observe")) { snprintf(out, outsz, "%s", cfg->backbone_observe ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "backbone_bridge"))  { snprintf(out, outsz, "%s", cfg->backbone_bridge ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "backbone_rate"))    { snprintf(out, outsz, "%u", cfg->backbone_rate); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     if (!strcasecmp(key, "room"))             { snprintf(out, outsz, "%d configured", cfg->n_rooms); return 0; }
     if (!strcasecmp(key, "blacklist"))        { snprintf(out, outsz, "%d entries", cfg->n_blacklist); return 0; }
@@ -712,7 +746,9 @@ int config_save(const mc_config_t *cfg, const char *path)
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
         "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",
         "role", "hotspot_power_high", "hotspot_power_low", "mbox",
-        "link_mode", "link_peer", "link_port", NULL   /* link_key emitted below */
+        "link_mode", "link_peer", "link_port",        /* link_key emitted below */
+        "backbone", "backbone_host", "backbone_port", "backbone_hub_key",
+        "backbone_observe", "backbone_bridge", "backbone_rate", NULL
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {

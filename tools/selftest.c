@@ -20,12 +20,19 @@
 #include "../src/crypto/aes128.h"
 #include "../src/monitor.h"
 #include "../src/link.h"
+#include "../src/backbone.h"
+#include "../src/crypto/tweetnacl.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
+
+void randombytes(unsigned char *x, unsigned long long xlen);
 
 static int g_fail = 0;
 #define CHECK(cond, ...) do { \
@@ -1460,6 +1467,404 @@ static void test_monitor(void)
     }
 }
 
+/* ---- IP backbone (docs/backbone.md) ---- */
+
+static void seed_seq(uint8_t *b, uint8_t start) { for (int i = 0; i < 32; i++) b[i] = (uint8_t)(start + i); }
+
+static bool hex_eq(const uint8_t *b, size_t n, const char *hex)
+{
+    uint8_t want[256];
+    return strlen(hex) == n * 2 && hex2bin(hex, want, sizeof(want)) == (int)n && memcmp(b, want, n) == 0;
+}
+
+/* An identity from an RFC 8032 seed and its (vector) public key. */
+static void vec_identity(mc_identity_t *id, uint8_t seed_start, const char *pub_hex)
+{
+    memset(id, 0, sizeof(*id));
+    hex2bin(pub_hex, id->pub, sizeof(id->pub));
+    seed_seq(id->sec, seed_start);
+    memcpy(&id->sec[32], id->pub, 32);             /* TweetNaCl secret key = seed || pub */
+    id->has_secret = true;
+}
+
+static void test_backbone_codec(void)
+{
+    printf("[backbone: wire format against the docs/backbone.md vectors]\n");
+    mc_identity_t rep, hub;
+    vec_identity(&rep, 0x00, "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8");
+    vec_identity(&hub, 0x20, "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7");
+    uint8_t r_sec[32], h_sec[32], r_pub[32], h_pub[32];
+    seed_seq(r_sec, 0x40); seed_seq(h_sec, 0x60);
+    crypto_scalarmult_base(r_pub, r_sec);
+    crypto_scalarmult_base(h_pub, h_sec);
+    CHECK(hex_eq(r_pub, 32, "79a631eede1bf9c98f12032cdeadd0e7a079398fc786b88cc846ec89af85a51a") &&
+          hex_eq(h_pub, 32, "675dd574ed7789310b3d2e7681f3790b466c773b1521fecf36577958371ea52f"),
+          "X25519 ephemeral public keys");
+
+    uint8_t hello[200];
+    size_t hl = bb_build_hello(hello, sizeof(hello), &rep, 0x03, 1792000000u, r_pub, "ON0RFG");
+    CHECK(hl == 145 && hex_eq(hello, hl,
+          "4d420101030000c0cf6a03a107bff3ce10be1d70dd18e74bc09967e4d6309ba5"
+          "0d5f1ddc8664125531b879a631eede1bf9c98f12032cdeadd0e7a079398fc786"
+          "b88cc846ec89af85a51a064f4e3052464772325767d90b5585b5c869ce17adc0"
+          "e8f74e92f152d3477ff99a441b2db0efd18ccd7110639f44ea3c211d4c9c1783"
+          "bae163f4d80503c556271a1ce798c1020f"), "HELLO bytes");
+    uint8_t hh[32];
+    SHA256_CTX c; sha256_init(&c); sha256_update(&c, hello, hl); sha256_final(&c, hh);
+    CHECK(hex_eq(hh, 32, "6c96f061289bab91bf5fd637e4a1220deafbe2efb728e115f6f749965b9c4e7e"), "hello_hash");
+
+    bb_welcome_t w = { .roles = 0x03, .ts = 1792000001u, .sid = 0x1a2b3c4du,
+                       .keepalive_s = 25, .status_s = 60, .neighbours_s = 300 };
+    memcpy(w.eph_pub, h_pub, 32);
+    uint8_t wel[BB_WELCOME_LEN];
+    size_t wl = bb_build_welcome(wel, sizeof(wel), &hub, &w, hh);
+    CHECK(wl == 148 && hex_eq(wel, wl,
+          "4d420102030001c0cf6a4d3c2b1a675dd574ed7789310b3d2e7681f3790b466c"
+          "773b1521fecf36577958371ea52f6c96f061289bab91bf5fd637e4a1220deafb"
+          "e2efb728e115f6f749965b9c4e7e19003c002c01b611bef646242ce91a5de9ae"
+          "16c95aeefb334cf94e8dab058e8c35062fad386758ee6d8ef90d3006e2199afd"
+          "eb1316dd522ae4ac8948d0b6f6cf6c4c507b8001"), "WELCOME bytes");
+
+    bb_welcome_t got;
+    CHECK(bb_check_welcome(wel, wl, hub.pub, hh, 0x03, &got) == 0 && got.sid == 0x1a2b3c4du &&
+          got.roles == 3 && got.keepalive_s == 25 && got.status_s == 60 && got.neighbours_s == 300,
+          "WELCOME accepted, fields decoded");
+    CHECK(bb_check_welcome(wel, wl, rep.pub, hh, 0x03, &got) != 0, "WELCOME rejected: not the pinned hub key");
+    uint8_t hh2[32]; memcpy(hh2, hh, 32); hh2[0] ^= 1;
+    CHECK(bb_check_welcome(wel, wl, hub.pub, hh2, 0x03, &got) != 0, "WELCOME rejected: answers another HELLO");
+    uint8_t welx[BB_WELCOME_LEN]; memcpy(welx, wel, wl); welx[79] ^= 1;
+    CHECK(bb_check_welcome(welx, wl, hub.pub, hh, 0x03, &got) != 0, "WELCOME rejected: tampered byte");
+    CHECK(bb_check_welcome(wel, wl, hub.pub, hh, 0x01, &got) != 0, "WELCOME rejected: grants a role not asked for");
+
+    uint8_t s1[32], s2[32], ku[32], kd[32];
+    crypto_scalarmult(s1, r_sec, h_pub);
+    crypto_scalarmult(s2, h_sec, r_pub);
+    CHECK(memcmp(s1, s2, 32) == 0 &&
+          hex_eq(s1, 32, "d6fb939511b2381bc8599b4b8edc5968829450dfd7a87aebe78a703cd04cd54e"),
+          "X25519 shared secret (both sides agree)");
+    CHECK(bb_derive_keys(s1, hello, hl, wel, wl, ku, kd) == 0 &&
+          hex_eq(ku, 32, "141922284ac65dafe1f28d9af212229728a9a949d3d6301bd83ae2cb73455ce5") &&
+          hex_eq(kd, 32, "be484977837de2e5315ff41d3bf7b7cd3d4b7bb1af1dde564c29849822df7fae"),
+          "k_up / k_down");
+    uint8_t zero[32] = {0};
+    uint8_t zu[32], zd[32];
+    CHECK(bb_derive_keys(zero, hello, hl, wel, wl, zu, zd) == -1, "all-zero shared secret refused");
+
+    uint8_t d[BB_MAX_DGRAM]; size_t n;
+    n = bb_seal(d, sizeof(d), BB_T_KEEPALIVE, 0x1a2b3c4du, 1, NULL, 0, ku);
+    CHECK(n == 28 && hex_eq(d, n, "4d4201104d3c2b1a0100000095909f12cd7628661a2ba746b8a8e276"), "KEEPALIVE bytes");
+    n = bb_seal(d, sizeof(d), BB_T_KEEPALIVE_ACK, 0x1a2b3c4du, 1, NULL, 0, kd);
+    CHECK(n == 28 && hex_eq(d, n, "4d4201204d3c2b1a0100000008b340d0bfeb875470dd700794c28f87"), "KEEPALIVE_ACK bytes");
+
+    uint8_t frame[7] = { 0x15, 0x00, 0xb0, 0x01, 0x02, 0x03, 0x04 };
+    mc_packet_t fp; pkt_parse(&fp, frame, sizeof(frame));
+    uint8_t body[64];
+    body[0] = 0; body[1] = BB_DISP_FORWARDED;
+    wr_u16le(&body[2], (uint16_t)(int16_t)-107); body[4] = 21; body[5] = 7;
+    pkt_calc_hash(&fp, &body[6]);
+    memcpy(&body[14], frame, 7);
+    n = bb_seal(d, sizeof(d), BB_T_OBSERVE, 0x1a2b3c4du, 2, body, 21, ku);
+    CHECK(n == 49 && hex_eq(d, n,
+          "4d4201114d3c2b1a02000000000095ff150795bb58de03d4fb371500b0010203"
+          "04789982ea2e4f120a35a9e324ab0c46b7"), "OBSERVE bytes (pkt_hash = MeshCore dedup hash)");
+
+    uint8_t t; uint32_t sid, seq; const uint8_t *b; size_t blen;
+    CHECK(bb_open(d, n, ku, &t, &sid, &seq, &b, &blen) == 0 && t == BB_T_OBSERVE && sid == 0x1a2b3c4du &&
+          seq == 2 && blen == 21 && memcmp(b, body, 21) == 0, "session datagram opens with k_up");
+    CHECK(bb_open(d, n, kd, &t, &sid, &seq, &b, &blen) != 0, "...but not with the other direction's key");
+    d[20] ^= 1;
+    CHECK(bb_open(d, n, ku, &t, &sid, &seq, &b, &blen) != 0, "tampered body fails the MAC");
+
+    uint8_t rs[BB_RESET_LEN];
+    n = bb_build_reset(rs, sizeof(rs), &hub, 0x1a2b3c4du, 7, 1792000100u);
+    CHECK(n == 80 && hex_eq(rs, n,
+          "4d4201034d3c2b1a0700000064c0cf6ad0b442eaf3ddd0afa74708d9026a7eae"
+          "4305e0026173c660ec68a875ccfa60912ed4a62aaa9b5cd3240240bfdd930a0f"
+          "f8cb58c032415be8666c6764abc8040a"), "RESET bytes");
+    uint32_t rts;
+    CHECK(bb_check_reset(rs, n, hub.pub, &sid, &seq, &rts) == 0 && sid == 0x1a2b3c4du && seq == 7 &&
+          rts == 1792000100u, "RESET verifies");
+    CHECK(bb_check_reset(rs, n, rep.pub, &sid, &seq, &rts) != 0, "RESET from the wrong key rejected");
+
+    bb_replay_t rw = {0};
+    CHECK(!bb_replay_check(&rw, 0), "replay: seq 0 never valid");
+    CHECK(bb_replay_check(&rw, 1) && !bb_replay_check(&rw, 1), "replay: seq 1 once, then rejected");
+    CHECK(bb_replay_check(&rw, 3) && bb_replay_check(&rw, 2) && !bb_replay_check(&rw, 2),
+          "replay: out of order inside the window accepted once");
+    CHECK(bb_replay_check(&rw, 100) && !bb_replay_check(&rw, 36) && bb_replay_check(&rw, 37),
+          "replay: 64 behind is too old, 63 behind still ok");
+}
+
+/* ---- end to end: the test plays the hub on 127.0.0.1 ---- */
+
+typedef struct {
+    int fd;
+    struct sockaddr_in peer;           /* the repeater, from its last datagram */
+    uint8_t k_up[32], k_down[32];
+    uint32_t sid, seq_down;
+} fake_hub_t;
+
+/* Run the repeater's backbone service until the hub has a datagram (or timeout). */
+static ssize_t hub_wait(fake_hub_t *h, mc_backbone *bb, uint8_t *d, size_t cap, int ms)
+{
+    for (int i = 0; i < ms; i++) {
+        backbone_service(bb, hal_millis());
+        socklen_t al = sizeof(h->peer);
+        ssize_t r = recvfrom(h->fd, d, cap, MSG_DONTWAIT, (struct sockaddr *)&h->peer, &al);
+        if (r > 0) return r;
+        usleep(1000);
+    }
+    return -1;
+}
+
+/* Next session datagram of a given type from the repeater (others are skipped). */
+static ssize_t hub_wait_type(fake_hub_t *h, mc_backbone *bb, uint8_t type,
+                             const uint8_t **body, size_t *blen, uint8_t *d, size_t cap)
+{
+    for (int k = 0; k < 40; k++) {
+        ssize_t r = hub_wait(h, bb, d, cap, 200);
+        if (r < 0) return -1;
+        uint8_t t; uint32_t sid, seq;
+        if (bb_open(d, (size_t)r, h->k_up, &t, &sid, &seq, body, blen) == 0 && t == type)
+            return r;
+    }
+    return -1;
+}
+
+static void hub_send(fake_hub_t *h, uint8_t type, const uint8_t *body, size_t blen, uint8_t *out, size_t *outlen)
+{
+    uint8_t d[BB_MAX_DGRAM];
+    size_t n = bb_seal(d, sizeof(d), type, h->sid, ++h->seq_down, body, blen, h->k_down);
+    sendto(h->fd, d, n, 0, (struct sockaddr *)&h->peer, sizeof(h->peer));
+    if (out) { memcpy(out, d, n); *outlen = n; }
+}
+
+static void hub_send_frame(fake_hub_t *h, const mc_packet_t *p, uint8_t *out, size_t *outlen)
+{
+    uint8_t raw[MC_MAX_TRANS_UNIT], body[10 + MC_MAX_TRANS_UNIT];
+    int n = pkt_serialize(p, raw, sizeof(raw));
+    memset(body, 0, 10);
+    body[1] = (uint8_t)n;
+    memcpy(&body[10], raw, (size_t)n);
+    hub_send(h, BB_T_FRAME, body, 10 + (size_t)n, out, outlen);
+}
+
+static void pump(mc_backbone *bb, int ms)
+{
+    for (int i = 0; i < ms; i++) { backbone_service(bb, hal_millis()); usleep(1000); }
+}
+
+static int txq_used(const mc_mesh_t *m) { return MESH_TXQ_SIZE - mesh_txq_free(m); }
+
+static void test_backbone_session(void)
+{
+    printf("[backbone: config, handshake, observe, bridge, policy, rate limit, reset]\n");
+    mc_identity_t id, hub, other;
+    mc_identity_generate(&id); mc_identity_generate(&hub); mc_identity_generate(&other);
+
+    mc_config_t cfg; config_defaults(&cfg);
+    mc_mesh_t mesh; mesh_init(&mesh, &id, &cfg);
+    mc_backbone bb;
+    CHECK(!cfg.backbone_enable && backbone_init(&bb, &cfg, &id, &mesh) == 0 && bb.state == BB_OFF &&
+          backbone_pollfd(&bb) == -1, "off by default: no socket, no traffic");
+    config_set(&cfg, "backbone", "true");
+    CHECK(backbone_init(&bb, &cfg, &id, &mesh) == -1 && bb.state == BB_OFF,
+          "enabled without backbone_hub_key: refused, stays off");
+    CHECK(config_set(&cfg, "backbone_hub_key", "abcd") == -2, "a short hub key is invalid");
+    char hex[65]; bin2hex(hub.pub, 32, hex, sizeof(hex));
+    char out[128];
+    CHECK(config_set(&cfg, "backbone_hub_key", hex) == 0 && config_get(&cfg, "backbone_hub_key", out, sizeof(out)) == 0 &&
+          !strcmp(out, hex), "hub key set + read back as hex");
+    CHECK(cfg.backbone_port == 4405 && cfg.backbone_observe && !cfg.backbone_bridge && cfg.backbone_rate == 30 &&
+          !strcmp(cfg.backbone_host, "be.mesh73.net"), "defaults: be.mesh73.net:4405, observe on, bridge off, 30/min");
+
+    fake_hub_t h; memset(&h, 0, sizeof(h));
+    uint16_t port = (uint16_t)(45600 + (getpid() % 120));
+    h.fd = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in a; memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); a.sin_port = htons(port);
+    bind(h.fd, (struct sockaddr *)&a, sizeof(a));
+    char ps[8]; snprintf(ps, sizeof(ps), "%u", port);
+    config_set(&cfg, "backbone_host", "127.0.0.1");
+    config_set(&cfg, "backbone_port", ps);
+    config_set(&cfg, "backbone_bridge", "true");
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    cfg.ping_channel[0] = '\0';                     /* ping on any channel */
+    snprintf(cfg.name, sizeof(cfg.name), "%s", "ON0TST");
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    mesh_init(&mesh, &id, &cfg);
+    CHECK(backbone_init(&bb, &cfg, &id, &mesh) == 0 && bb.state == BB_IDLE, "enabled with a hub key");
+    mesh.bb = &bb;
+
+    /* HELLO: signed by the node key, as the doc says */
+    uint8_t d[BB_MAX_DGRAM + 8], hello[200];
+    ssize_t r = hub_wait(&h, &bb, d, sizeof(d), 3000);
+    bool hello_ok = r == 75 + 6 + 64 && d[3] == BB_T_HELLO && d[4] == 3 && memcmp(&d[10], id.pub, 32) == 0 &&
+                    d[74] == 6 && !memcmp(&d[75], "ON0TST", 6);
+    if (hello_ok) {
+        uint8_t m[200]; memcpy(m, "MCBB1 HELLO", 11); memcpy(m + 11, d, 81);
+        hello_ok = mc_identity_verify(id.pub, &d[81], m, 11 + 81);
+    }
+    CHECK(hello_ok, "hub got a valid signed HELLO (roles observe+bridge, name, node key)");
+    size_t hl = r > 0 ? (size_t)r : 0;
+    memcpy(hello, d, hl);
+    uint32_t hello_ts = rd_u32le(&hello[6]);
+
+    /* WELCOME */
+    uint8_t h_sec[32], h_pub[32], hh[32], wel[BB_WELCOME_LEN], shared[32];
+    randombytes(h_sec, 32); crypto_scalarmult_base(h_pub, h_sec);
+    SHA256_CTX c; sha256_init(&c); sha256_update(&c, hello, hl); sha256_final(&c, hh);
+    bb_welcome_t w = { .roles = 3, .ts = (uint32_t)time(NULL), .sid = 0x11223344u,
+                       .keepalive_s = 25, .status_s = 60, .neighbours_s = 300 };
+    memcpy(w.eph_pub, h_pub, 32);
+    size_t wl = bb_build_welcome(wel, sizeof(wel), &hub, &w, hh);
+    crypto_scalarmult(shared, h_sec, &hello[42]);
+    bb_derive_keys(shared, hello, hl, wel, wl, h.k_up, h.k_down);
+    h.sid = w.sid;
+    sendto(h.fd, wel, wl, 0, (struct sockaddr *)&h.peer, sizeof(h.peer));
+
+    const uint8_t *body; size_t blen;
+    r = hub_wait_type(&h, &bb, BB_T_KEEPALIVE, &body, &blen, d, sizeof(d));
+    CHECK(bb.state == BB_UP && bb.sid == 0x11223344u && bb.roles == 3 && r > 0,
+          "WELCOME -> session up, KEEPALIVE confirms it");
+    CHECK(memcmp(bb.k_up, h.k_up, 32) == 0 && memcmp(bb.k_down, h.k_down, 32) == 0, "both sides derived the same keys");
+    r = hub_wait_type(&h, &bb, BB_T_STATUS, &body, &blen, d, sizeof(d));
+    char js[BB_MAX_DGRAM + 1] = "";
+    if (r > 0) { memcpy(js, body, blen); js[blen] = 0; }
+    CHECK(r > 0 && blen <= 1100 && js[0] == '{' && js[blen - 1] == '}' && strstr(js, "\"name\":\"ON0TST\"") &&
+          strstr(js, "\"fw\":\"") && strstr(js, "\"airtime_ms\":{\"tx\":") && strstr(js, "\"backbone\":{"),
+          "STATUS sent right away (JSON: %.60s...)", js);
+
+    /* NEIGHBOURS: empty table = one page, empty list; names are JSON-escaped */
+    bb.next_neighbours_ms = 0;
+    r = hub_wait_type(&h, &bb, BB_T_NEIGHBOURS, &body, &blen, d, sizeof(d));
+    if (r > 0) { memcpy(js, body, blen); js[blen] = 0; }
+    CHECK(r > 0 && !strcmp(js, "{\"page\":1,\"pages\":1,\"list\":[]}"), "NEIGHBOURS: empty table -> %s", js);
+    for (int i = 0; i < 20; i++) {
+        mesh.neighbors[i].used = true;
+        mesh.neighbors[i].pub[0] = (uint8_t)i;
+        snprintf(mesh.neighbors[i].name, sizeof(mesh.neighbors[i].name), "N%02d-a\"b\\c\xff", i);
+        mesh.neighbors[i].last_seen = (uint32_t)time(NULL);
+    }
+    bb.next_neighbours_ms = 0;
+    int pages = 0, entries = 0; bool esc_ok = false, sizes_ok = true;
+    for (int k = 0; k < 10; k++) {
+        r = hub_wait_type(&h, &bb, BB_T_NEIGHBOURS, &body, &blen, d, sizeof(d));
+        if (r <= 0) break;
+        memcpy(js, body, blen); js[blen] = 0;
+        if (blen > 1100) sizes_ok = false;
+        int pg = 0, pgs = 0; sscanf(js, "{\"page\":%d,\"pages\":%d", &pg, &pgs);
+        for (const char *q = js; (q = strstr(q, "\"pub\":")); q++) entries++;
+        if (strstr(js, "N00-a\\\"b\\\\c?\"")) esc_ok = true;
+        pages++;
+        if (pg == pgs) break;
+    }
+    CHECK(pages >= 2 && entries == 20 && sizes_ok, "NEIGHBOURS paged: %d entries over %d pages, each <= 1100 bytes", entries, pages);
+    CHECK(esc_ok, "neighbour names JSON-escaped, invalid UTF-8 -> '?'");
+    memset(mesh.neighbors, 0, sizeof(mesh.neighbors));
+
+    /* FRAME with a signed advert -> relayed with our hash, reported, never offered back */
+    mc_advert_info_t info = { .type = ADV_TYPE_REPEATER, .name = "ON0FAR" };
+    mc_packet_t adv; mc_advert_build(&adv, &other, &info, (uint32_t)time(NULL));
+    uint8_t frame_dg[BB_MAX_DGRAM]; size_t frame_len = 0;
+    uint64_t offered0 = bb.offered;
+    hub_send_frame(&h, &adv, frame_dg, &frame_len);
+    r = hub_wait_type(&h, &bb, BB_T_OBSERVE, &body, &blen, d, sizeof(d));
+    CHECK(r > 0 && body[0] == BB_OBS_FROM_BACKBONE && body[1] == BB_DISP_FORWARDED && rd_u16le(&body[2]) == 0,
+          "FRAME advert -> OBSERVE (from backbone, forwarded)");
+    int adv_q = -1;
+    for (int i = 0; i < MESH_TXQ_SIZE; i++)
+        if (mesh.txq[i].used && pkt_payload_type(&mesh.txq[i].pkt) == PAYLOAD_TYPE_ADVERT) adv_q = i;
+    CHECK(adv_q >= 0 && pkt_path_hash_count(&mesh.txq[adv_q].pkt) == 1 && mesh.txq[adv_q].pkt.path[0] == id.pub[0],
+          "bridged advert queued for RF with our hash appended");
+    CHECK(bb.offered == offered0 && bb.injected == 1, "a frame from the hub is never offered back as BRIDGE");
+    CHECK(mesh.stats.rx_total == 0 && mesh_neighbor_count(&mesh) == 0,
+          "no RF counters, no neighbour entry for a backbone frame");
+
+    /* replayed FRAME datagram */
+    uint64_t rej0 = bb.rejected;
+    sendto(h.fd, frame_dg, frame_len, 0, (struct sockaddr *)&h.peer, sizeof(h.peer));
+    pump(&bb, 50);
+    CHECK(bb.rejected == rej0 + 1 && bb.injected == 1, "replayed FRAME rejected (sequence window)");
+
+    /* a ping from the hub is relayed but not answered (no local services) */
+    mc_packet_t ping; build_public_text(&cfg, "Far: ping", &ping);
+    int q0 = txq_used(&mesh);
+    hub_send_frame(&h, &ping, NULL, NULL);
+    r = hub_wait_type(&h, &bb, BB_T_OBSERVE, &body, &blen, d, sizeof(d));
+    CHECK(r > 0 && body[1] == BB_DISP_FORWARDED && mesh.stats.pong_sent == 0 && mesh.stats.ping_seen == 0 &&
+          txq_used(&mesh) == q0 + 1, "backbone 'ping' relayed, no pong");
+
+    /* a private message from the hub is refused by the content policy */
+    mc_packet_t dm; memset(&dm, 0, sizeof(dm));
+    dm.header = pkt_make_header(PAYLOAD_VER_1, PAYLOAD_TYPE_TXT_MSG, ROUTE_TYPE_FLOOD);
+    dm.payload_len = 20; for (int i = 0; i < 20; i++) dm.payload[i] = (uint8_t)(0x30 + i);
+    q0 = txq_used(&mesh);
+    hub_send_frame(&h, &dm, NULL, NULL);
+    r = hub_wait_type(&h, &bb, BB_T_OBSERVE, &body, &blen, d, sizeof(d));
+    CHECK(r > 0 && body[0] == BB_OBS_FROM_BACKBONE && body[1] == BB_DISP_POLICY && txq_used(&mesh) == q0,
+          "backbone DM -> OBSERVE disposition policy, nothing queued");
+
+    /* an RF flood we relay is offered up with our hash; OBSERVE carries its rssi/snr */
+    mc_packet_t grp; make_public_grp(&cfg, ROUTE_TYPE_FLOOD, &grp);
+    grp.path_len = 0x01; grp.path[0] = 0x42;
+    uint8_t raw[MC_MAX_TRANS_UNIT];
+    int n = pkt_serialize(&grp, raw, sizeof(raw));
+    int disp = mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
+    backbone_observe(&bb, raw, (size_t)n, -80, 40, 0, disp);
+    r = hub_wait_type(&h, &bb, BB_T_BRIDGE, &body, &blen, d, sizeof(d));
+    mc_packet_t up;
+    bool up_ok = r > 0 && body[0] == 0 && body[1] == blen - 10 && pkt_parse(&up, &body[10], body[1]) == 0 &&
+                 pkt_path_hash_count(&up) == 2 && up.path[0] == 0x42 && up.path[1] == id.pub[0];
+    if (up_ok) { uint8_t hsh[8]; pkt_calc_hash(&up, hsh); up_ok = memcmp(hsh, &body[2], 8) == 0; }
+    CHECK(disp == MESH_RX_FORWARDED && up_ok, "RF flood relayed -> BRIDGE with our hash appended + pkt_hash");
+    r = hub_wait_type(&h, &bb, BB_T_OBSERVE, &body, &blen, d, sizeof(d));
+    CHECK(r > 0 && body[0] == 0 && body[1] == BB_DISP_FORWARDED && (int16_t)rd_u16le(&body[2]) == -80 &&
+          (int8_t)body[4] == 40 && body[5] == n && !memcmp(&body[14], raw, (size_t)n),
+          "RF frame -> OBSERVE with rssi/snr and the frame as heard");
+    disp = mesh_on_recv(&mesh, raw, (size_t)n, -80, 40);
+    CHECK(disp == MESH_RX_DUPLICATE, "its RF echo is a duplicate (disposition 1)");
+
+    /* rate limit: 30/min holds 10; three used so far (advert, ping, DM) */
+    uint64_t lim0 = bb.limited;
+    for (int i = 0; i < 12; i++) {
+        mc_packet_t x = dm; x.payload[0] = (uint8_t)(0x80 + i);
+        hub_send_frame(&h, &x, NULL, NULL);
+    }
+    pump(&bb, 100);
+    bool saw_limited = false;
+    for (int k = 0; k < 14; k++) {
+        if (hub_wait_type(&h, &bb, BB_T_OBSERVE, &body, &blen, d, sizeof(d)) <= 0) break;
+        if (body[1] == BB_DISP_LIMITED) saw_limited = true;
+    }
+    CHECK(bb.limited > lim0 && saw_limited, "rate limit: %llu FRAMEs refused + reported as limited",
+          (unsigned long long)(bb.limited - lim0));
+
+    /* RESET: a stale/forged one is ignored; a valid one makes the repeater re-register */
+    uint8_t rs[BB_RESET_LEN];
+    rej0 = bb.rejected;
+    size_t rn = bb_build_reset(rs, sizeof(rs), &hub, bb.sid, bb.seq_out + 5, (uint32_t)time(NULL));
+    sendto(h.fd, rs, rn, 0, (struct sockaddr *)&h.peer, sizeof(h.peer));
+    pump(&bb, 30);
+    CHECK(bb.state == BB_UP && bb.rejected == rej0 + 1, "RESET for a seq we never sent: ignored");
+    rn = bb_build_reset(rs, sizeof(rs), &other, bb.sid, bb.seq_out, (uint32_t)time(NULL));
+    sendto(h.fd, rs, rn, 0, (struct sockaddr *)&h.peer, sizeof(h.peer));
+    pump(&bb, 30);
+    CHECK(bb.state == BB_UP, "RESET signed by another key: ignored");
+    rn = bb_build_reset(rs, sizeof(rs), &hub, bb.sid, bb.seq_out, (uint32_t)time(NULL));
+    sendto(h.fd, rs, rn, 0, (struct sockaddr *)&h.peer, sizeof(h.peer));
+    bool rehello = false;
+    for (int k = 0; k < 40 && !rehello; k++) {
+        r = hub_wait(&h, &bb, d, sizeof(d), 100);
+        if (r > 0 && d[3] == BB_T_HELLO && rd_u32le(&d[6]) > hello_ts) rehello = true;
+    }
+    CHECK(rehello && bb.state == BB_HELLO_SENT, "valid RESET -> new HELLO (later ts)");
+
+    backbone_close(&bb);
+    CHECK(bb.state == BB_OFF && bb.fd < 0, "close");
+    close(h.fd);
+}
+
 int main(void)
 {
     test_header();
@@ -1488,6 +1893,8 @@ int main(void)
     test_node_name();
     test_rooms();
     test_monitor();
+    test_backbone_codec();
+    test_backbone_session();
 
     printf("\n%s (%d failure%s)\n", g_fail ? "TESTS FAILED" : "ALL TESTS PASSED",
            g_fail, g_fail == 1 ? "" : "s");

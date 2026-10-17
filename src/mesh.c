@@ -9,6 +9,7 @@
 #include "aprsis.h"
 #include "monitor.h"
 #include "mbox.h"
+#include "backbone.h"
 #include "crypto/aes128.h"
 
 #include <ctype.h>
@@ -48,6 +49,7 @@ static void neighbor_update(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE],
         mesh_neighbor_t *n = &m->neighbors[i];
         if (n->used && memcmp(n->pub, pub, MC_PUB_KEY_SIZE) == 0) {
             n->rssi = rssi; n->snr_q = snr_q; n->last_seen = now; n->count++;
+            n->hops = pkt_path_hash_count(pkt);
             mc_advert_extract(pkt, &n->type, n->name, sizeof(n->name));
             return;
         }
@@ -64,11 +66,15 @@ static void neighbor_update(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE],
     n->used = true;
     memcpy(n->pub, pub, MC_PUB_KEY_SIZE);
     n->rssi = rssi; n->snr_q = snr_q; n->last_seen = now; n->count = 1;
+    n->hops = pkt_path_hash_count(pkt);
     mc_advert_extract(pkt, &n->type, n->name, sizeof(n->name));
 }
 
-static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority,
-                    uint32_t delay_ms, int8_t power_dbm)
+/* Queue a packet for transmission. `own` = this node originated it (advert,
+ * pong, ...) rather than relaying it. Everything queued is offered to the
+ * backbone hub as a bridge candidate, except frames the hub sent us. */
+static bool enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority,
+                    uint32_t delay_ms, int8_t power_dbm, bool own)
 {
     uint64_t now = hal_millis();
     for (int i = 0; i < MESH_TXQ_SIZE; i++) {
@@ -78,11 +84,27 @@ static void enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority,
             m->txq[i].priority = priority;
             m->txq[i].due_ms = now + delay_ms;
             m->txq[i].power_dbm = power_dbm;
-            return;
+            if (m->bb && m->rx_src != MESH_SRC_BACKBONE) {
+                uint8_t raw[MC_MAX_TRANS_UNIT];
+                int n = pkt_serialize(pkt, raw, sizeof(raw));
+                if (n > 0)
+                    backbone_offer(m->bb, raw, (size_t)n, own);
+            }
+            return true;
         }
     }
     m->stats.tx_queue_full++;
     log_warn("mesh: TX queue full, dropping packet (type=%u)", pkt_payload_type(pkt));
+    return false;
+}
+
+int mesh_txq_free(const mc_mesh_t *m)
+{
+    int n = 0;
+    for (int i = 0; i < MESH_TXQ_SIZE; i++)
+        if (!m->txq[i].used)
+            n++;
+    return n;
 }
 
 /* Flood back-off: rand(0..5) slots of half the packet's airtime (+4%), as
@@ -460,7 +482,7 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m), true);
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
@@ -488,7 +510,7 @@ static void send_tod(mc_mesh_t *m, const char *text)
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);                        /* our own echo is a dup */
-    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m), true);
     m->stats.timeofday_sent++;
 }
 
@@ -509,7 +531,7 @@ static void send_help(mc_mesh_t *m, const mc_pub_channel_t *ch)
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m));
+    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m), true);
     m->stats.help_sent++;
 }
 
@@ -543,8 +565,7 @@ static bool send_routed_reply(mc_mesh_t *m, const mc_packet_t *rx,
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);          /* seed dedup so we don't display/re-forward our own echo */
-    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m));
-    return true;
+    return enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m), true);
 }
 
 /* Per-sender reply rate-limit: at most one #mbox reply per base call per cooldown,
@@ -651,7 +672,7 @@ void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms)
         uint8_t hash[MC_MAX_HASH_SIZE];
         pkt_calc_hash(&pkt, hash);
         seen_check_and_add(m, hash);                     /* our echo is a dup */
-        enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m));
+        enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m), true);
         m->stats.probes_sent++;
     }
     m->probe_remaining--;
@@ -698,22 +719,24 @@ static void grp_sender_name(const uint8_t *plain, char *out, size_t outsz)
 }
 
 /* Verbose display, blacklist check and ping/pong for an allowed public group
- * message. Returns false if the sender is blacklisted (drop, do not forward). */
-static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
-                               const mc_pub_channel_t *ch,
-                               char *sender_out, size_t sender_sz)
+ * message. Returns 1 to forward it, 0 if a command here consumed it (not
+ * re-flooded), -1 if the sender is blacklisted (drop). A frame from the
+ * backbone gets no local services: the repeater that heard it answers. */
+static int process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
+                              const mc_pub_channel_t *ch,
+                              char *sender_out, size_t sender_sz)
 {
     if (sender_out && sender_sz) sender_out[0] = '\0';
     if (pkt_payload_type(pkt) != PAYLOAD_TYPE_GRP_TXT) {
         if (m->cfg->verbose)
             log_info("[public %s] <data, %u bytes>", ch->name[0] ? ch->name : "-",
                      (unsigned)pkt->payload_len);
-        return true;                    /* can't read a sender; forward */
+        return 1;                       /* can't read a sender; forward */
     }
     uint8_t plain[MC_MAX_PACKET_PAYLOAD];
     int plen = channel_decrypt(ch, pkt, plain, sizeof(plain));
     if (plen < 5)
-        return true;                    /* undecodable; forward as-is */
+        return 1;                       /* undecodable; forward as-is */
 
     char sender[MC_BLACKLIST_NAME_LEN];
     grp_sender_name(plain, sender, sizeof(sender));
@@ -723,13 +746,16 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         if (m->cfg->verbose)
             log_info("[ignored] blacklisted '%s' on %s", sender, ch->name[0] ? ch->name : "-");
         mon_pkt_drop(m, pkt, "blacklisted sender");
-        return false;                   /* drop: no forward, no pong */
+        return -1;                      /* drop: no forward, no pong */
     }
 
     if (m->cfg->verbose)
-        log_info("[public %s] %s", ch->name[0] ? ch->name : "-", (const char *)&plain[5]);
+        log_info("[public %s] %s%s", ch->name[0] ? ch->name : "-", (const char *)&plain[5],
+                 m->rx_src == MESH_SRC_BACKBONE ? "  (via backbone)" : "");
     if (m->mon)
         monitor_public(m->mon, ch->name, (const char *)&plain[5], pkt->rssi_dbm, pkt->snr_q);
+    if (m->rx_src == MESH_SRC_BACKBONE)
+        return 1;                       /* no local services for frames from the hub */
 
     const char *body = grp_message_body(plain, plen);
     if (body) {
@@ -766,10 +792,10 @@ static bool process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
              * commands: our routed reply comes back as a DIRECT packet and must
              * pass through untouched (else another mbox repeater on the path would
              * "help"-reply to it). */
-            return mbox_handle(m, pkt, ch, sender, body);
+            return mbox_handle(m, pkt, ch, sender, body) ? 1 : 0;
         }
     }
-    return true;
+    return 1;
 }
 
 void mesh_on_rx_error(mc_mesh_t *m, int kind, int16_t rssi_dbm, int8_t snr_q)
@@ -785,29 +811,36 @@ void mesh_on_rx_error(mc_mesh_t *m, int kind, int16_t rssi_dbm, int8_t snr_q)
     if (m->mon) monitor_drop(m->mon, 0xFF, reason, -1);
 }
 
-void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
-                  int16_t rssi_dbm, int8_t snr_q)
+int mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
+                 int16_t rssi_dbm, int8_t snr_q)
 {
+    bool rf = (m->rx_src != MESH_SRC_BACKBONE);   /* RF-only counters, services, neighbours */
+    if (rf)
+        m->stats.rx_airtime_ms += sx126x_airtime_ms(len);
+
     mc_packet_t pkt;
     if (pkt_parse(&pkt, raw, len) != 0) {
-        m->stats.rx_bad_parse++;
+        if (rf)
+            m->stats.rx_bad_parse++;
         if (m->mon) monitor_drop(m->mon, 0xFF, "parse error (malformed frame)", -1);
-        return;
+        return MESH_RX_MALFORMED;
     }
     pkt.rssi_dbm = rssi_dbm;
     pkt.snr_q = snr_q;
-    m->stats.rx_total++;
+    if (rf)
+        m->stats.rx_total++;
 
     /* dedup (records hash on first sight) */
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     if (seen_check_and_add(m, hash)) {
-        m->stats.rx_dup++;
+        if (rf)
+            m->stats.rx_dup++;
         mon_pkt_drop(m, &pkt, "duplicate (already seen)");
-        return;
+        return MESH_RX_DUPLICATE;
     }
 
-    if (pkt_route_type(&pkt) == ROUTE_TYPE_TRANSPORT_FLOOD)
+    if (rf && pkt_route_type(&pkt) == ROUTE_TYPE_TRANSPORT_FLOOD)
         m->stats.rx_transport_flood++;      /* diagnostic: is the mesh using Transport? */
 
     uint8_t pt = pkt_payload_type(&pkt);
@@ -817,10 +850,11 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
     if (pt == PAYLOAD_TYPE_ADVERT) {
         uint8_t pub[MC_PUB_KEY_SIZE];
         if (!mc_advert_verify(&pkt, pub)) {
-            m->stats.rx_advert_bad++;
+            if (rf)
+                m->stats.rx_advert_bad++;
             log_debug("mesh: dropped advert with bad signature");
             mon_pkt_drop(m, &pkt, "advert: bad signature");
-            return; /* forged - do not propagate */
+            return MESH_RX_POLICY; /* forged - do not propagate */
         }
         mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
         if (config_is_blacklisted(m->cfg, aname)) {
@@ -828,27 +862,32 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             if (m->cfg->verbose)
                 log_info("[ignored] blacklisted advert '%s'", aname);
             mon_pkt_drop(m, &pkt, "advert: blacklisted sender");
-            return; /* don't register as a neighbour, don't re-flood */
+            return MESH_RX_POLICY; /* don't register as a neighbour, don't re-flood */
         }
-        m->stats.rx_advert++;
-        neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
-        if (m->cfg->role == ROLE_HOTSPOT && config_is_affinity(m->cfg, aname))
-            learn_affinity(m, pub);   /* remember its path-hash for downlink detection */
+        if (rf) {                  /* the neighbour table is what this radio hears */
+            m->stats.rx_advert++;
+            neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
+            if (m->cfg->role == ROLE_HOTSPOT && config_is_affinity(m->cfg, aname))
+                learn_affinity(m, pub);   /* remember its path-hash for downlink detection */
+        }
 
         double lat, lon;
         bool has_loc = mc_advert_extract_location(&pkt, &lat, &lon);
         if (m->cfg->verbose) {
+            char sig[32];
+            if (rf) snprintf(sig, sizeof(sig), "rssi %d snr %.1f", rssi_dbm, snr_q / 4.0);
+            else    snprintf(sig, sizeof(sig), "via backbone");
             if (has_loc)
-                log_info("[advert] '%s' type=%u  loc %.5f,%.5f  rssi %d snr %.1f",
-                         aname[0] ? aname : "?", atype, lat, lon, rssi_dbm, snr_q / 4.0);
+                log_info("[advert] '%s' type=%u  loc %.5f,%.5f  %s",
+                         aname[0] ? aname : "?", atype, lat, lon, sig);
             else
-                log_info("[advert] '%s' type=%u  rssi %d snr %.1f",
-                         aname[0] ? aname : "?", atype, rssi_dbm, snr_q / 4.0);
+                log_info("[advert] '%s' type=%u  %s", aname[0] ? aname : "?", atype, sig);
         }
         if (m->mon)
             monitor_advert(m->mon, aname, atype, has_loc, lat, lon, rssi_dbm, snr_q);
-        /* APRS-IS iGate: gate a node's advertised position (validated inside) */
-        if (m->aprs && has_loc)
+        /* APRS-IS iGate: gate a node's advertised position (validated inside). Only
+         * what this radio heard: the hub's frames were gated where they were heard. */
+        if (rf && m->aprs && has_loc)
             aprsis_gate_node(m->aprs, hal_millis(), aname, atype, lat, lon, pub);
     }
 
@@ -856,23 +895,27 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         /* TODO: MeshCore appends our SNR to the trace path and relays it.
          * Not yet implemented to avoid corrupting trace path semantics;
          * trace packets are counted but not forwarded by this node. */
-        m->stats.trace_seen++;
+        if (rf)
+            m->stats.trace_seen++;
         if (m->cfg->verbose)
             log_info("[trace] %u hops, rssi %d snr %.1f (not forwarded yet)",
                      pkt_path_hash_count(&pkt), rssi_dbm, snr_q / 4.0);
         mon_pkt_drop(m, &pkt, "trace (not forwarded yet)");
-        return;
+        return MESH_RX_LOCAL;
     }
 
     if (!m->cfg->forward)
-        return;
+        return MESH_RX_LOCAL;
 
     /* ham content policy: relay only provably-public traffic, drop the rest */
     const mc_pub_channel_t *pub_ch = NULL;
     fwd_decision_t decision = classify_forward(m, &pkt, &pub_ch);
     if (decision == FWD_OK_GRP_PUBLIC) {
-        if (!process_public_grp(m, &pkt, pub_ch, grp_sender, sizeof(grp_sender)))
-            return;                                 /* blacklisted sender -> don't forward */
+        int g = process_public_grp(m, &pkt, pub_ch, grp_sender, sizeof(grp_sender));
+        if (g < 0)
+            return MESH_RX_POLICY;                  /* blacklisted sender -> don't forward */
+        if (g == 0)
+            return MESH_RX_LOCAL;                   /* a command answered here, not re-flooded */
         m->stats.fwd_grp_public++;
     } else if (decision == FWD_OK_REGION) {
         /* region-tagged group traffic: forwarded opaquely (no key to decrypt) */
@@ -896,7 +939,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
         if (m->cfg->verbose)
             log_info("[ignored] type=0x%02X dropped: %s", pt, decision_reason(decision));
         mon_pkt_drop(m, &pkt, decision_reason(decision));
-        return;
+        return MESH_RX_POLICY;
     }
 
     /* hotspot role: scope to the personal bridge + pick direction-dependent power.
@@ -910,7 +953,7 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             if (m->cfg->verbose)
                 log_info("[hotspot] not forwarding type=0x%02X (out of personal scope)", pt);
             mon_pkt_drop(m, &pkt, "hotspot: out of personal scope");
-            return;
+            return MESH_RX_POLICY;
         }
     }
 
@@ -922,24 +965,40 @@ void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             mc_identity_copy_hash(m->id, &pkt.path[n * hs], hs);
             pkt_set_path_hash_count(&pkt, (uint8_t)(n + 1));
 
-            enqueue(m, &pkt, (uint8_t)(n + 1), flood_backoff_ms(&pkt), tx_power); /* closer sources = higher priority */
+            /* closer sources = higher priority */
+            if (!enqueue(m, &pkt, (uint8_t)(n + 1), flood_backoff_ms(&pkt), tx_power, false))
+                return MESH_RX_LOCAL;
             m->stats.fwd_flood++;
-        } else {
-            m->stats.fwd_dropped++;
-            mon_pkt_drop(m, &pkt, pkt.marked_dnr ? "do-not-retransmit" : "path full");
+            return MESH_RX_FORWARDED;
         }
-    } else { /* direct */
-        uint8_t n  = pkt_path_hash_count(&pkt);
-        uint8_t hs = pkt_path_hash_size(&pkt);
-        if (n >= 1 && mc_identity_hash_match(m->id, pkt.path, hs)) {
-            /* we are the next hop: strip ourselves from the front of the path */
-            memmove(pkt.path, pkt.path + hs, (size_t)(n - 1) * hs);
-            pkt_set_path_hash_count(&pkt, (uint8_t)(n - 1));
-            enqueue(m, &pkt, 0, 0, tx_power); /* routed traffic is highest priority, no delay */
-            m->stats.fwd_direct++;
-        }
-        /* not addressed to us -> ignore */
+        m->stats.fwd_dropped++;
+        mon_pkt_drop(m, &pkt, pkt.marked_dnr ? "do-not-retransmit" : "path full");
+        return MESH_RX_LOCAL;
     }
+
+    /* direct */
+    uint8_t n  = pkt_path_hash_count(&pkt);
+    uint8_t hs = pkt_path_hash_size(&pkt);
+    if (n >= 1 && mc_identity_hash_match(m->id, pkt.path, hs)) {
+        /* we are the next hop: strip ourselves from the front of the path */
+        memmove(pkt.path, pkt.path + hs, (size_t)(n - 1) * hs);
+        pkt_set_path_hash_count(&pkt, (uint8_t)(n - 1));
+        /* routed traffic is highest priority, no delay */
+        if (!enqueue(m, &pkt, 0, 0, tx_power, false))
+            return MESH_RX_LOCAL;
+        m->stats.fwd_direct++;
+        return MESH_RX_FORWARDED;
+    }
+    return MESH_RX_LOCAL;                           /* not addressed to us -> ignore */
+}
+
+int mesh_on_backbone(mc_mesh_t *m, const uint8_t *raw, size_t len)
+{
+    int saved = m->rx_src;
+    m->rx_src = MESH_SRC_BACKBONE;
+    int r = mesh_on_recv(m, raw, len, MON_VIA_BACKBONE, 0);
+    m->rx_src = saved;
+    return r;
 }
 
 /* pick the most urgent due entry (lowest priority value, then earliest due) */
@@ -1008,6 +1067,7 @@ void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
         int rc = sx126x_transmit(raw, (size_t)n, airtime + 1000);
         if (rc == 0) {
             m->stats.tx_total++;
+            m->stats.tx_airtime_ms += airtime;
             if (m->cfg->verbose)
                 log_info("[tx] %s %s %dB %uhop %ddBm airtime %ums",
                          payload_type_name(pkt_payload_type(&e->pkt)),
@@ -1051,7 +1111,7 @@ int mesh_send_advert(mc_mesh_t *m)
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
 
-    enqueue(m, &pkt, 0, hal_rng_int(0, 3) * 50, own_tx_power(m)); /* small jitter */
+    enqueue(m, &pkt, 0, hal_rng_int(0, 3) * 50, own_tx_power(m), true); /* small jitter */
     m->stats.adverts_sent++;
     log_info("mesh: queued self-advert '%s'", m->cfg->name);
     return 0;

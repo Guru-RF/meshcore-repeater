@@ -31,6 +31,21 @@
 #define MESH_MAX_NEIGHBORS   96
 #define MESH_REPLY_DELAY_MS 300   /* MeshCore SERVER_RESPONSE_DELAY: hold command replies this long */
 
+/* Where the frame being processed came from (m->rx_src). */
+#define MESH_SRC_RF        0      /* heard on air (or relayed by a split-RX ear) */
+#define MESH_SRC_BACKBONE  1      /* sent down by the IP backbone hub */
+
+/* What mesh_on_recv did with a frame. 0..3 are reported to the backbone hub as
+ * the OBSERVE disposition (docs/backbone.md), so keep the numbers. */
+enum {
+    MESH_RX_FORWARDED = 0,   /* queued for retransmission */
+    MESH_RX_DUPLICATE = 1,   /* already seen (dedup ring) */
+    MESH_RX_POLICY    = 2,   /* refused: content policy, blacklist, bad signature, hotspot scope */
+    MESH_RX_LOCAL     = 3,   /* accepted, not retransmitted: direct for another hop, trace,
+                                forwarding off, path full, command answered here */
+    MESH_RX_MALFORMED = 5,   /* could not be parsed (never reported) */
+};
+
 typedef struct {
     uint64_t rx_total;
     uint64_t rx_bad_parse;
@@ -66,6 +81,8 @@ typedef struct {
     uint64_t tx_failed;       /* transmits that never completed (no TxDone) */
     uint64_t radio_resets;    /* radio re-inits after a failed transmit */
     uint64_t adverts_sent;
+    uint64_t tx_airtime_ms;   /* air time of completed transmits */
+    uint64_t rx_airtime_ms;   /* air time of frames received on RF */
 } mesh_stats_t;
 
 typedef struct {
@@ -77,6 +94,7 @@ typedef struct {
     int8_t   snr_q;
     uint32_t last_seen;       /* UNIX seconds */
     uint32_t count;
+    uint8_t  hops;            /* path length of its last advert (0 = heard directly) */
 } mesh_neighbor_t;
 
 typedef struct {
@@ -87,7 +105,7 @@ typedef struct {
     int8_t      power_dbm;    /* chip TX power for this packet (hotspot power asymmetry) */
 } mesh_tx_entry_t;
 
-typedef struct {
+typedef struct mc_mesh {
     const mc_identity_t *id;
     const mc_config_t   *cfg;
 
@@ -102,6 +120,8 @@ typedef struct {
 
     struct mc_aprsis *aprs;   /* APRS-IS iGate (NULL = feature disabled) */
     struct mc_monitor *mon;   /* live CLI message monitors (NULL = none) */
+    struct mc_backbone *bb;   /* IP backbone (NULL = feature disabled) */
+    int rx_src;               /* MESH_SRC_* of the frame being processed */
 
     /* hotspot role: path-hashes (pub[0]) of affinity repeaters, learned from
      * their adverts, used to tell "from the mesh" (downlink) from "local" (uplink) */
@@ -145,9 +165,19 @@ void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms);
  * boundary. Call every loop iteration (like mesh_service_probe). */
 void mesh_service_timeofday(mc_mesh_t *m, uint64_t now_ms);
 
-/* Handle a freshly received raw packet (rssi/snr from the radio). */
-void mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
+/* Handle a freshly received raw packet (rssi/snr from the radio). Returns a
+ * MESH_RX_* result. */
+int  mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
                   int16_t rssi_dbm, int8_t snr_q);
+
+/* Handle a frame the backbone hub sent down: the same dedup ring, content
+ * policy and forwarding as RF, but no local services (ping, time, #mbox, ...),
+ * no APRS gating, no neighbour entry, and never offered back to the hub.
+ * Returns a MESH_RX_* result. */
+int  mesh_on_backbone(mc_mesh_t *m, const uint8_t *raw, size_t len);
+
+/* Free TX queue slots. */
+int  mesh_txq_free(const mc_mesh_t *m);
 
 /* Account a packet the radio heard but could not deliver: SX126X_RX_CRC_ERR
  * (payload CRC failed; rssi/snr valid) or SX126X_RX_HDR_ERR (corrupt header). */

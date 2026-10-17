@@ -1,5 +1,6 @@
 /* cli.c - local operator console. */
 #include "cli.h"
+#include "backbone.h"
 #include "sx126x.h"
 #include "util.h"
 #include "log.h"
@@ -140,6 +141,28 @@ static void cmd_status(cli_ctx_t *ctx)
                    ctx->cfg->link_port, (unsigned long long)ctx->link->frames_in,
                    (unsigned long long)ctx->link->frames_bad);
     }
+    if (ctx->bb && ctx->bb->state != BB_OFF) {
+        const mc_backbone *b = ctx->bb;
+        uint64_t now = hal_millis();
+        char what[96];
+        if (b->state == BB_UP)
+            snprintf(what, sizeof(what), "session %08x %s%s%s  last-rx %llus", (unsigned)b->sid,
+                     (b->roles & BB_ROLE_OBSERVE) ? "observe" : "",
+                     (b->roles & BB_ROLE_OBSERVE) && (b->roles & BB_ROLE_BRIDGE) ? "+" : "",
+                     (b->roles & BB_ROLE_BRIDGE) ? "bridge" : (b->roles ? "" : "no-roles"),
+                     (unsigned long long)((now - b->last_rx_ms) / 1000));
+        else if (b->state == BB_IDLE && b->next_try_ms > now)
+            snprintf(what, sizeof(what), "retry in %llus",
+                     (unsigned long long)((b->next_try_ms - now) / 1000));
+        else
+            what[0] = '\0';
+        printf("backbone  : %s %s:%u %s  sessions %llu  observed %llu offered %llu injected %llu "
+               "limited %llu rejected %llu\n",
+               backbone_state_name(b), ctx->cfg->backbone_host, ctx->cfg->backbone_port, what,
+               (unsigned long long)b->sessions, (unsigned long long)b->observed,
+               (unsigned long long)b->offered, (unsigned long long)b->injected,
+               (unsigned long long)b->limited, (unsigned long long)b->rejected);
+    }
     printf("blacklist : %d entries  ignored %llu   control port %u\n",
            ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
     if (ctx->cfg->role == ROLE_HOTSPOT)
@@ -161,7 +184,7 @@ static void cmd_neighbors(cli_ctx_t *ctx)
     static const char *types[] = { "none", "chat", "repeater", "room", "sensor" };
     uint32_t now = (uint32_t)time(NULL);
     int shown = 0;
-    printf("%-12s %-18s %-8s %6s %5s %8s\n", "node-id", "name", "type", "rssi", "snr", "age(s)");
+    printf("%-12s %-18s %-8s %4s %6s %5s %8s\n", "node-id", "name", "type", "hops", "rssi", "snr", "age(s)");
     for (int i = 0; i < MESH_MAX_NEIGHBORS; i++) {
         mesh_neighbor_t *n = &ctx->mesh->neighbors[i];
         if (!n->used)
@@ -169,8 +192,8 @@ static void cmd_neighbors(cli_ctx_t *ctx)
         char idhex[16];
         bin2hex(n->pub, 6, idhex, sizeof(idhex));
         const char *t = (n->type < 5) ? types[n->type] : "?";
-        printf("%-12s %-18s %-8s %6d %5.2f %8u\n",
-               idhex, n->name[0] ? n->name : "-", t,
+        printf("%-12s %-18s %-8s %4u %6d %5.2f %8u\n",
+               idhex, n->name[0] ? n->name : "-", t, n->hops,
                n->rssi, n->snr_q / 4.0, now - n->last_seen);
         shown++;
     }

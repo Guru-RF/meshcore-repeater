@@ -48,6 +48,10 @@ int  monitor_count(const mc_monitor *mon);
  * (caller closes fd). */
 bool monitor_add(mc_monitor *mon, int fd, const char *cmdline);
 
+/* rssi value meaning "this frame came over the IP backbone, not RF": the
+ * signal fields of an event then print as "via backbone". */
+#define MON_VIA_BACKBONE (-32768)
+
 /* Event emitters - no-ops when no monitor matches. `text` for a public message
  * is the raw decrypted body (typically "sender: message"). */
 void monitor_public(mc_monitor *mon, const char *chan, const char *text,

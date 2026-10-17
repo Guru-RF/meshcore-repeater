@@ -114,6 +114,18 @@ typedef struct {
     char     link_peer[64];      /* rx mode: TX-node host to relay frames to */
     uint16_t link_port;          /* UDP port (default 4404) */
 
+    /* ---- IP backbone to a central hub (optional; docs/backbone.md) ----
+     * observe: uplink heard frames + status; bridge: offer/transmit frames the hub
+     * relays between RF islands. A fallback: with the hub down nothing changes. */
+    bool     backbone_enable;
+    char     backbone_host[96];  /* hub host name or IPv4 address */
+    uint16_t backbone_port;      /* hub UDP port (default 4405) */
+    uint8_t  backbone_hub_key[32]; /* hub Ed25519 public key (pinned) */
+    bool     backbone_have_hub_key;
+    bool     backbone_observe;
+    bool     backbone_bridge;
+    uint32_t backbone_rate;      /* max frames from the hub transmitted per minute */
+
     /* ---- APRS-IS RX iGate: gate adverts-with-coordinates to APRS-IS ---- */
     bool     aprs_enable;
     char     aprs_call[16];      /* login + own-beacon source SSID call (e.g. ON6URE-6) */

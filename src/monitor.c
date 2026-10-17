@@ -111,15 +111,26 @@ bool monitor_wants_advert(const mc_mon_conn_t *c) { return c->kind == MON_ALL ||
 bool monitor_wants_drop(const mc_mon_conn_t *c)   { return c->kind == MON_ALL || c->kind == MON_DROP; }
 bool monitor_wants_tx(const mc_mon_conn_t *c)     { return c->kind == MON_ALL || c->kind == MON_TX; }
 
+/* "rssi -95 snr 7.5", or "via backbone" for a frame the hub sent down. */
+static const char *sig_str(char *buf, size_t sz, int rssi, int8_t snr_q)
+{
+    if (rssi == MON_VIA_BACKBONE)
+        snprintf(buf, sz, "via backbone");
+    else
+        snprintf(buf, sz, "rssi %d snr %.1f", rssi, snr_q / 4.0);
+    return buf;
+}
+
 void monitor_public(mc_monitor *mon, const char *chan, const char *text,
                     int rssi, int8_t snr_q)
 {
     if (mon->n == 0) return;
     char t[16]; stamp(t, sizeof(t));
     char line[600];
-    int len = snprintf(line, sizeof(line), "%s [public %s] %s  (rssi %d snr %.1f)\n",
+    char sig[32];
+    int len = snprintf(line, sizeof(line), "%s [public %s] %s  (%s)\n",
                        t, (chan && *chan) ? chan : "-",
-                       text ? text : "", rssi, snr_q / 4.0);
+                       text ? text : "", sig_str(sig, sizeof(sig), rssi, snr_q));
     if (len < 0) return;
     if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
     for (int i = mon->n - 1; i >= 0; i--)              /* backward: mon_write may compact */
@@ -132,10 +143,10 @@ void monitor_region(mc_monitor *mon, const char *room, uint8_t ptype,
 {
     if (mon->n == 0) return;
     char t[16]; stamp(t, sizeof(t));
-    char line[256];
+    char line[256], sig[32];
     int len = snprintf(line, sizeof(line),
-                       "%s [room %s] relayed  type=0x%02X  len=%uB  (rssi %d snr %.1f)\n",
-                       t, room ? room : "?", ptype, len_b, rssi, snr_q / 4.0);
+                       "%s [room %s] relayed  type=0x%02X  len=%uB  (%s)\n",
+                       t, room ? room : "?", ptype, len_b, sig_str(sig, sizeof(sig), rssi, snr_q));
     if (len < 0) return;
     if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
     for (int i = mon->n - 1; i >= 0; i--)
@@ -148,12 +159,12 @@ void monitor_advert(mc_monitor *mon, const char *name, uint8_t atype,
 {
     if (mon->n == 0) return;
     char t[16]; stamp(t, sizeof(t));
-    char line[200];
+    char line[200], sig[32];
     int len = has_loc
-        ? snprintf(line, sizeof(line), "%s [advert] '%s' type=%u  loc %.5f,%.5f  (rssi %d snr %.1f)\n",
-                   t, (name && *name) ? name : "?", atype, lat, lon, rssi, snr_q / 4.0)
-        : snprintf(line, sizeof(line), "%s [advert] '%s' type=%u  (rssi %d snr %.1f)\n",
-                   t, (name && *name) ? name : "?", atype, rssi, snr_q / 4.0);
+        ? snprintf(line, sizeof(line), "%s [advert] '%s' type=%u  loc %.5f,%.5f  (%s)\n",
+                   t, (name && *name) ? name : "?", atype, lat, lon, sig_str(sig, sizeof(sig), rssi, snr_q))
+        : snprintf(line, sizeof(line), "%s [advert] '%s' type=%u  (%s)\n",
+                   t, (name && *name) ? name : "?", atype, sig_str(sig, sizeof(sig), rssi, snr_q));
     if (len < 0) return;
     if ((size_t)len >= sizeof(line)) len = (int)sizeof(line) - 1;
     for (int i = mon->n - 1; i >= 0; i--)              /* backward: mon_write may compact */

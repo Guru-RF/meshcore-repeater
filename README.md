@@ -310,6 +310,7 @@ the repeater joins that network out of the box:
 | `timeofday` | `true` | answer `time`/`date` on the ping channel (needs an accurate clock) |
 | `mbox` | `true` | `#mbox` store-and-forward mailbox (set `false` to disable) — see below |
 | `control_port` | `4403` | local `meshcore-cli` port on 127.0.0.1 (0 = off) |
+| `backbone` | `false` | IP fallback backbone to the hub (`backbone_*` keys) — see [Backbone](#backbone-ip-fallback) |
 
 > To interoperate with the mesh, **`frequency`, `bandwidth`, `spreading_factor`,
 > `coding_rate` and `sync_word` must match** — the defaults above already do, per
@@ -707,6 +708,57 @@ replay window.)
 
 ---
 
+## Backbone (IP fallback)
+
+Optionally connect the repeater to a central **hub** over the internet
+(`be.mesh73.net`). The hub bridges RF islands and blind spots between repeaters,
+and feeds a public map with each repeater's status and the RF links it hears. It
+is a **fallback**: with the hub unreachable the repeater runs exactly as without
+it. It's **off by default**. The wire protocol is specified in
+[`docs/backbone.md`](docs/backbone.md).
+
+- **`backbone_observe`** (read-only) — send the hub every frame heard on RF with
+  its RSSI/SNR, plus a status report every minute and the neighbour table every
+  5 minutes.
+- **`backbone_bridge`** — offer the hub the frames this repeater transmits, and
+  transmit the frames the hub sends for this repeater. A frame from the hub goes
+  through the **same dedup ring and content policy** as one heard on RF, so
+  nothing is transmitted from IP that would be dropped from RF. It never triggers
+  ping/pong, time, probe or `#mbox` replies here, is never sent back to the hub,
+  and is capped at `backbone_rate` frames per minute.
+
+```
+island A               internet                island B
+ ~~~ RF ~~~ repeater ── UDP 4405 ── hub ── UDP 4405 ── repeater ~~~ RF ~~~
+```
+
+The repeater opens the session itself (UDP, so it works behind NAT and on 4G),
+signs it with its own MeshCore key, and checks the hub's signature against the
+pinned `backbone_hub_key`; every datagram after that is authenticated and replay
+protected. There is no shared network-wide secret. DNS lookups and sockets never
+block the radio loop.
+
+```
+backbone          = true
+backbone_host     = be.mesh73.net
+backbone_port     = 4405
+backbone_hub_key  = <the hub's public key, 64 hex>
+backbone_observe  = true
+backbone_bridge   = false        # true once the hub operator enables bridging
+backbone_rate     = 30           # max frames from the hub transmitted per minute
+```
+
+The hub admits only repeaters on its **allowlist**, by public key. Send the hub
+operator your callsign and the repeater's public key: the `pub=` line of
+`repeater.key`, which the repeater also logs at start-up
+(`backbone: node key ...`). The backbone keys take effect on a **restart**.
+
+`meshcore-cli status` shows a `backbone` line: state, session, and the
+observed / offered / injected / limited / rejected counts. The hub must accept
+**UDP 4405** inbound; the repeater needs nothing open.
+
+---
+
 ## Frequency / legal notes
 
 - The defaults follow the
@@ -752,12 +804,14 @@ src/
   hmac_sha256.[ch] HMAC-SHA256 (public-channel MAC verify)
   aprs.[ch]       APRS base-91 compressed position/timestamp
   aprsis.[ch]     APRS-IS RX iGate (passcode, qAO gating, own beacon)
+  backbone.[ch]   IP backbone client: signed UDP session to the hub, observe + bridge
   log.[ch], util.[ch]
   crypto/         vendored TweetNaCl (Ed25519/SHA-512) + B-Con SHA-256 + tiny-AES-128
 tools/
   selftest.c      host unit tests       mock_hal.c   no-hardware HAL
   rx-sniffer/     RX-only PHY sniffer firmware for LilyGO SX1262 handhelds
 docs/
+  backbone.md           IP backbone wire protocol (the contract for the hub)
   lilygo-433-noise.md   field test: LilyGO 433 MHz handhelds vs their own noise
 ```
 

@@ -19,6 +19,7 @@ typedef struct {
     mc_mesh_t     *mesh;
     mc_identity_t *id;
     struct mc_link *link;        /* split RX/TX link, or NULL */
+    struct mc_backbone *bb;      /* IP backbone, or NULL */
     const char    *config_path;
     bool           radio_ready;  /* false during self-test / before radio init */
     bool          *running;      /* set to false on quit */

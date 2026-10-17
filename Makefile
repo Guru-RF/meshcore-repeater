@@ -27,13 +27,15 @@ ifeq ($(GPIOD_MAJOR),2)
 endif
 CPPFLAGS += $(GPIOD_CFLAGS)
 
-LDLIBS_DAEMON = $(GPIOD_LIBS) -lm
-LDLIBS_TEST   = -lm
+# -lanl: getaddrinfo_a (non-blocking DNS for the backbone); part of libc since
+# glibc 2.34, where libanl is an empty stub kept for compatibility.
+LDLIBS_DAEMON = $(GPIOD_LIBS) -lm -lanl
+LDLIBS_TEST   = -lm -lanl
 
 CORE_OBJ = \
   src/packet.o src/util.o src/identity.o src/advert.o src/mesh.o \
   src/sx126x.o src/config.o src/log.o src/hmac_sha256.o \
-  src/aprs.o src/aprsis.o src/monitor.o src/link.o src/mbox.o
+  src/aprs.o src/aprsis.o src/monitor.o src/link.o src/mbox.o src/backbone.o
 CRYPTO_OBJ = src/crypto/tweetnacl.o src/crypto/sha256.o src/crypto/randombytes.o src/crypto/aes128.o
 
 DAEMON_OBJ = $(CORE_OBJ) $(CRYPTO_OBJ) src/cli.o src/hal_linux.o src/main.o
@@ -72,6 +74,14 @@ endif
 
 selftest: $(TEST_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $(TEST_OBJ) $(LDLIBS_TEST)
+
+# src/version.h: the git version the backbone reports to the hub. Rewritten only
+# when it changes, so it rebuilds just what includes it.
+src/version.h: FORCE
+	@v=$$(git describe --always --dirty 2>/dev/null || echo unknown); \
+	  printf '#define MC_VERSION "%s"\n' "$$v" > $@.tmp; \
+	  cmp -s $@.tmp $@ && rm -f $@.tmp || mv $@.tmp $@
+src/backbone.o: src/version.h
 
 # pull in the generated header dependencies (no-op on a fresh tree)
 -include $(sort $(DAEMON_OBJ:.o=.d) $(TEST_OBJ:.o=.d))
@@ -118,6 +128,7 @@ uninstall:
 
 clean:
 	rm -f $(DAEMON_OBJ) $(TEST_OBJ) $(BIN) $(CLI) selftest \
-	      $(DAEMON_OBJ:.o=.d) $(TEST_OBJ:.o=.d)
+	      $(DAEMON_OBJ:.o=.d) $(TEST_OBJ:.o=.d) src/version.h
 
-.PHONY: all test install uninstall clean
+FORCE:
+.PHONY: all test install uninstall clean FORCE
