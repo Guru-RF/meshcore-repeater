@@ -97,10 +97,13 @@ static void cmd_status(cli_ctx_t *ctx)
            (unsigned long long)(up_s / 3600),
            (unsigned long long)((up_s % 3600) / 60),
            (unsigned long long)(up_s % 60));
-    printf("radio     : %.3f MHz SF%u BW%g CR4/%u chip %ddBm sync 0x%04X cad %s fwd %s\n",
+    char clk[24] = "-";
+    if (ctx->radio_ready)
+        sx126x_clock_str(clk, sizeof(clk));
+    printf("radio     : %.3f MHz SF%u BW%g CR4/%u chip %ddBm sync 0x%04X cad %s fwd %s  clock %s\n",
            ctx->cfg->frequency, ctx->cfg->spreading_factor, ctx->cfg->bandwidth,
            ctx->cfg->coding_rate, ctx->cfg->tx_power, ctx->cfg->sync_word,
-           ctx->cfg->use_cad ? "on" : "off", ctx->cfg->forward ? "on" : "off");
+           ctx->cfg->use_cad ? "on" : "off", ctx->cfg->forward ? "on" : "off", clk);
     printf("rx        : total %llu  dup %llu  bad %llu  adverts %llu (bad %llu)  crc-err %llu  hdr-err %llu\n",
            (unsigned long long)s->rx_total, (unsigned long long)s->rx_dup,
            (unsigned long long)s->rx_bad_parse, (unsigned long long)s->rx_advert,

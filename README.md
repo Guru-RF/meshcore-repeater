@@ -120,9 +120,11 @@ alias).
 - **Antenna switch:** `rf_switch = dio2` makes the SX126x raise DIO2 during TX to
   flip the on-module RF switch. If your module instead exposes RXEN/TXEN, set
   `rf_switch = external` and wire `gpio_rxen`/`gpio_txen`.
-- **TCXO vs crystal:** if the module has a plain crystal (no TCXO), init detects
-  the XOSC-start error and automatically retries with the TCXO disabled. You can
-  also force it with `tcxo_voltage = 0`.
+- **TCXO vs crystal:** the same config works on both. Init tries the TCXO at
+  `tcxo_voltage`; on a module with a plain crystal the chip reports an
+  oscillator start error, and the repeater runs on the crystal instead. It logs
+  one line (`no TCXO at 1.6 V ... using the crystal`), and `status` shows
+  `clock crystal` or `clock TCXO 1.6V`. `tcxo_voltage = 0` skips the probe.
 - **LEDs:** the **ON** LED is solid while the repeater runs; the **DATA** LED
   pulses on each received/transmitted packet. Set `use_leds = false` to disable.
 

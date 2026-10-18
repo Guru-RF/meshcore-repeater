@@ -34,6 +34,9 @@ typedef struct {
 int  sx126x_init(const sx126x_cfg_t *cfg);
 /* Reset + re-init with the current (possibly live-changed) settings, then RX. */
 int  sx126x_reinit(void);
+/* The clock found at init: "TCXO 1.6V", or "crystal" when no TCXO answered
+ * (or tcxo_voltage = 0). */
+void sx126x_clock_str(char *out, size_t outsz);
 
 /* Re-tune (standby, set freq, image-calibrate). Returns 0 on success. */
 int  sx126x_set_frequency(double freq_mhz);

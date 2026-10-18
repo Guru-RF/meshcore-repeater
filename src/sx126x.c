@@ -9,6 +9,7 @@
 #include "hal.h"
 #include "log.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 
@@ -341,10 +342,8 @@ static int init_sequence(void)
         SX_TRY(sx_set_standby(STDBY_RC), "SetStandby(post-cal)");
 
         uint16_t errs = 0;
-        if (sx_get_device_errors(&errs) == 0 && (errs & ERR_XOSC_START)) {
-            log_warn("sx126x: XOSC/TCXO start error (0x%04X)", errs);
-            return -100; /* probably a plain-crystal module: retry without TCXO */
-        }
+        if (sx_get_device_errors(&errs) == 0 && (errs & ERR_XOSC_START))
+            return -100; /* no TCXO answered: a plain-crystal module, retry without */
     }
 
     /* DIO2 drives the on-module antenna switch (no external RXEN/TXEN). */
@@ -386,8 +385,9 @@ int sx126x_init(const sx126x_cfg_t *cfg)
 
     int rc = init_sequence();
     if (rc == -100 && g_cfg.tcxo_voltage > 0.0) {
-        log_warn("sx126x: retrying init with TCXO disabled (assuming plain crystal)");
-        g_cfg.tcxo_voltage = 0.0;
+        log_info("sx126x: no TCXO at %.1f V (oscillator start error) - using the crystal",
+                 g_cfg.tcxo_voltage);
+        g_cfg.tcxo_voltage = 0.0;            /* reinit after a TX failure skips the probe */
         rc = init_sequence();
     }
     if (rc != 0) {
@@ -395,10 +395,20 @@ int sx126x_init(const sx126x_cfg_t *cfg)
         return rc;
     }
 
-    log_info("sx126x: init ok - %.3f MHz SF%u BW%g CR4/%u %d dBm (chip) sync=0x%04X rf-switch=%s tcxo=%.2fV",
+    char clk[24];
+    sx126x_clock_str(clk, sizeof(clk));
+    log_info("sx126x: init ok - %.3f MHz SF%u BW%g CR4/%u %d dBm (chip) sync=0x%04X rf-switch=%s clock=%s",
              g_cfg.freq_mhz, g_cfg.sf, g_cfg.bw_khz, g_cfg.cr, g_cfg.power_dbm,
-             g_cfg.sync_word, g_cfg.dio2_rf_switch ? "DIO2" : "RXEN/TXEN", g_cfg.tcxo_voltage);
+             g_cfg.sync_word, g_cfg.dio2_rf_switch ? "DIO2" : "RXEN/TXEN", clk);
     return 0;
+}
+
+void sx126x_clock_str(char *out, size_t outsz)
+{
+    if (g_cfg.tcxo_voltage > 0.0)
+        snprintf(out, outsz, "TCXO %.1fV", g_cfg.tcxo_voltage);
+    else
+        snprintf(out, outsz, "crystal");
 }
 
 /* Hardware-reset the chip and re-run the bring-up with the CURRENT settings
