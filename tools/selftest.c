@@ -1312,6 +1312,10 @@ static void test_config(void)
     CHECK(config_set(&cfg, "frequency", "434.000") == 0 && cfg.frequency == 434.0,
           "set frequency");
     CHECK(config_set(&cfg, "frequency", "9999") == -2, "reject out-of-range frequency");
+    char wv[64];
+    CHECK(cfg.web_port == 80 && !cfg.web_password[0] && config_set(&cfg, "web_password", "s3cret") == 0 &&
+          config_get(&cfg, "web_password", wv, sizeof(wv)) == 0 && !strcmp(wv, "set"),
+          "web admin keys known to the daemon; the password reads back masked");
     CHECK(config_set(&cfg, "sync_word", "public") == 0 && cfg.sync_word == 0x3444,
           "sync_word public -> 0x3444");
     CHECK(config_set(&cfg, "bogus", "x") == -1, "unknown key rejected");

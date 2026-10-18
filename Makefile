@@ -112,6 +112,9 @@ install: $(BIN) $(CLI)
 	fi
 	install -Dm 644 meshcore-repeater.service $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
 	install -Dm 755 $(CLI) $(DESTDIR)/usr/local/bin/$(CLI)
+	install -d -o $(SERVICE_USER) -g $(SERVICE_USER) -m 755 $(DESTDIR)$(INSTALL_DIR)/web
+	install -m 644 web/meshcore-web.py web/index.html $(DESTDIR)$(INSTALL_DIR)/web/
+	install -Dm 644 meshcore-web.service $(DESTDIR)/etc/systemd/system/meshcore-web.service
 	@systemctl daemon-reload 2>/dev/null || true
 	@echo ""
 	@echo "Installed: runs as '$(SERVICE_USER)' from $(INSTALL_DIR) (config + key live there too)."
@@ -119,8 +122,9 @@ install: $(BIN) $(CLI)
 	@echo "  sudo systemctl enable --now meshcore-repeater"
 
 uninstall:
-	-systemctl disable --now meshcore-repeater 2>/dev/null
+	-systemctl disable --now meshcore-repeater meshcore-web 2>/dev/null
 	rm -f $(DESTDIR)/etc/systemd/system/meshcore-repeater.service
+	rm -f $(DESTDIR)/etc/systemd/system/meshcore-web.service
 	rm -f $(DESTDIR)/usr/local/bin/$(CLI)
 	-systemctl daemon-reload 2>/dev/null
 	@echo "service removed. Left $(INSTALL_DIR) and user '$(SERVICE_USER)' in place;"

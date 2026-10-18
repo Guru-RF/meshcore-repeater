@@ -1,0 +1,30 @@
+# Installed by `make install`. The admin web page (plain HTTP on the LAN, user
+# 'admin', password = web_password in the repeater's config). It stays off,
+# exiting cleanly, until web_password is set. It talks to the repeater over the
+# control port and edits its config, so it runs as the same 'meshcore' user;
+# CAP_NET_BIND_SERVICE lets it use port 80, systemd-journal the Service log tab.
+[Unit]
+Description=MeshCore repeater admin page (web)
+After=network-online.target meshcore-repeater.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meshcore
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/opt/meshcore-repeater
+ExecStart=/usr/bin/python3 -I /opt/meshcore-repeater/web/meshcore-web.py
+# Off (no web_password) exits 0 and stays down; a password or port change
+# exits 75 so systemd starts it again with the new values.
+Restart=on-failure
+RestartSec=2
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/meshcore-repeater
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

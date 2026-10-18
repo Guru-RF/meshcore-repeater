@@ -99,6 +99,7 @@ void config_defaults(mc_config_t *cfg)
     cfg->hotspot_power_high = 22;      /* uplink: chip max ~ +30 dBm / 1 W at antenna */
     cfg->hotspot_power_low  = -9;      /* downlink: chip minimum (well under 100 mW) */
     cfg->hotspot_awake      = 3600;    /* attended, not unmanned: silent an hour after the last companion */
+    cfg->web_port           = 80;      /* the web admin runs only once web_password is set */
 }
 
 static void trim_name(const char *in, char *out, size_t outsz);  /* fwd decl */
@@ -594,6 +595,12 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
         return 0;
     }
     if (!strcasecmp(key, "hotspot_awake")) { if (!parse_u32(val, &u)) return -2; cfg->hotspot_awake = u; return 0; }
+    if (!strcasecmp(key, "web_port")) { if (!parse_u32(val, &u) || u > 65535) return -2; cfg->web_port = (uint16_t)u; return 0; }
+    if (!strcasecmp(key, "web_password")) {
+        if (strlen(val) >= sizeof(cfg->web_password)) return -2;
+        snprintf(cfg->web_password, sizeof(cfg->web_password), "%s", val);
+        return 0;
+    }
 
     return -1; /* unknown key */
 }
@@ -676,6 +683,8 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "hotspot_power_high")){ snprintf(out, outsz, "%d", cfg->hotspot_power_high); return 0; }
     if (!strcasecmp(key, "hotspot_power_low")) { snprintf(out, outsz, "%d", cfg->hotspot_power_low); return 0; }
     if (!strcasecmp(key, "hotspot_awake"))    { snprintf(out, outsz, "%u", cfg->hotspot_awake); return 0; }
+    if (!strcasecmp(key, "web_port"))         { snprintf(out, outsz, "%u", cfg->web_port); return 0; }
+    if (!strcasecmp(key, "web_password"))     { snprintf(out, outsz, "%s", cfg->web_password[0] ? "set" : ""); return 0; }
     return -1;
 }
 
@@ -927,7 +936,7 @@ int config_save(const mc_config_t *cfg, const char *path)
         "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
         "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",
-        "role", "hotspot_power_high", "hotspot_power_low", "hotspot_awake", "mbox",
+        "role", "hotspot_power_high", "hotspot_power_low", "hotspot_awake", "web_port", "mbox",
         "link_mode", "link_peer", "link_port",        /* link_key emitted below */
         "backbone", "backbone_host", "backbone_port", "backbone_hub_key",
         "backbone_observe", "backbone_bridge", "backbone_rate", "backbone_policy",
@@ -946,6 +955,8 @@ int config_save(const mc_config_t *cfg, const char *path)
     /* link_key: the real secret (config_get masks it, so it is not in KEYS[]) */
     if (cfg->link_key[0])
         fprintf(f, "%-18s = %s\n", "link_key", cfg->link_key);
+    if (cfg->web_password[0])          /* masked by config_get too */
+        fprintf(f, "%-18s = %s\n", "web_password", cfg->web_password);
     /* public_channel is a repeatable list; emit one line each (hex form, so no
      * base64 encoder is needed - it round-trips through hex2bin on load). */
     for (int i = 0; i < cfg->n_public_channels; i++) {

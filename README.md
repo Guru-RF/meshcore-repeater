@@ -681,6 +681,37 @@ daemon logs a warning if a repeater name carries an SSID (or a hotspot SSID is n
 
 ---
 
+## Admin page (web)
+
+A hotspot gets a web admin page on the LAN: plain HTTP on port 80, user
+`admin`. The installer generates the password once, prints it, and stores it
+as `web_password` in the config. A repeater has the page too, but it stays off
+until you set a `web_password` and run `sudo systemctl restart meshcore-web`.
+
+- **Overview:**
+  - the live `status`, channels and heard nodes;
+  - buttons to send an advert, reload or restart, and start or cancel a
+    coverage probe;
+  - the blacklist, with add and remove.
+- **Settings:** most of the config file as a form, grouped by subject:
+  - groups: station, hotspot, radio, rooms and services, blacklist, backbone,
+    APRS-IS, admin page, and the hardware pins (folded away);
+  - only what you change is written, in place, keeping the file's comments;
+  - the change is then applied with `reload`;
+  - settings marked *restart* restart the repeater instead, which takes about
+    6 seconds.
+- **Live log:** `monitor` in the browser: everything, public messages, adverts,
+  drops, transmitted packets, or one channel, with a text filter.
+- **Service log:** the repeater's journal, followed live.
+- **Console:** the `meshcore-cli` commands, with history and Tab completion.
+
+The page is a separate service (`meshcore-web`, Python, standard library only).
+It talks to the repeater over its control port and never touches the radio
+loop. It runs as the `meshcore` user. Plain HTTP means the password crosses the
+LAN unencrypted, so keep the page on your home network.
+
+---
+
 ## Split RX / TX over IP
 
 Optionally separate the **receiver(s)** from the **transmitter**. The biggest thing

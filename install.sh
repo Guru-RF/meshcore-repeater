@@ -51,8 +51,20 @@ sudo -u "$BUILD_USER" make -C "$SRC_DIR" test
 echo "📁 Installing to $INSTALL_DIR ..."
 make -C "$SRC_DIR" install
 
+# --- Admin page: on by default for a hotspot, so give it a password once ------
+# (before the restart below, so the repeater holds it too: its 'save' and
+# 'blacklist add' rewrite the config from memory)
+CONF="$INSTALL_DIR/meshcore-repeater.conf"
+WEB_PW=""
+if grep -qE '^[[:space:]]*role[[:space:]]*=[[:space:]]*hotspot' "$CONF" 2>/dev/null &&
+   ! grep -qE '^[[:space:]]*web_password[[:space:]]*=' "$CONF"; then
+  WEB_PW="$(python3 -c 'import secrets; print(secrets.token_urlsafe(9))')"
+  printf '\n# ---- admin page: http://<this host>/  user admin ----\nweb_password       = %s\n' "$WEB_PW" >> "$CONF"
+fi
+
 # --- Enable on boot ----------------------------------------------------------
 systemctl enable "$APP.service"
+systemctl enable meshcore-web.service      # stays off until web_password is set
 
 # --- Restart if already running (a daemon-reload alone keeps the old binary) --
 RESTARTED=0
@@ -61,6 +73,7 @@ if systemctl is-active --quiet "$APP.service"; then
   systemctl restart "$APP.service"
   RESTARTED=1
 fi
+systemctl restart meshcore-web.service || true   # new page + picks up a new web_password
 
 echo ""
 echo "✅ $APP installed — runs as user 'meshcore' from $INSTALL_DIR."
@@ -68,6 +81,12 @@ echo "📝 Edit the config:   sudo nano $INSTALL_DIR/meshcore-repeater.conf"
 echo "     • name / frequency (defaults follow the IARU R1 ham-MeshCore RFC)"
 echo "     • optional APRS-IS iGate: aprs_enable, aprs_call  (aprs_passcode = auto)"
 echo "🖥️  Control it live:    meshcore-cli status     (tab-completion enabled)"
+if [ -n "$WEB_PW" ]; then
+  echo "🌐 Admin page:         http://$(hostname)/   user admin   password $WEB_PW"
+  echo "     (it is in $CONF as web_password; change it on the page)"
+elif grep -qE '^[[:space:]]*web_password[[:space:]]*=' "$CONF" 2>/dev/null; then
+  echo "🌐 Admin page:         http://$(hostname)/   user admin"
+fi
 if [ "$SPI_JUST_ENABLED" -eq 1 ]; then
   echo "🔁 SPI was just enabled — REBOOT before starting:  sudo reboot"
   echo "   (it is enabled to start on boot, so it will come up after the reboot)"

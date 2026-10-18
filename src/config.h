@@ -176,6 +176,10 @@ typedef struct {
     int8_t   hotspot_power_high; /* uplink chip dBm (household->repeater; full power to reach it) */
     int8_t   hotspot_power_low;  /* downlink chip dBm (repeater->household; lowest usable, <100 mW) */
     uint32_t hotspot_awake;      /* s on the air after a companion is heard directly; 0 = always on */
+
+    /* ---- web admin page (web/meshcore-web.py; the daemon only keeps these) ---- */
+    uint16_t web_port;           /* plain HTTP on the LAN; 0 = off */
+    char     web_password[64];   /* user 'admin'; empty = web admin off */
 } mc_config_t;
 
 /* Case-insensitive name match; a trailing '*' in pattern is a prefix wildcard. */

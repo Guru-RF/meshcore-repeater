@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore admin</title>
+<style>
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --text: #1d2330; --muted: #6a7282; --line: #e2e5ea;
+  --accent: #2563eb; --accent-text: #ffffff; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+  --chip: #eef1f6; --code: #0f172a; --code-text: #d7e0ee; --input: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11151c; --card: #1a2029; --text: #e6e9ef; --muted: #8b93a3; --line: #2a313c;
+    --accent: #4f8cff; --accent-text: #0b1220; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --chip: #232b36; --code: #0b0f15; --code-text: #cfd8e6; --input: #121821;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { background: var(--card); border-bottom: 1px solid var(--line); padding: 12px 16px;
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header h1 { font-size: 18px; margin: 0; }
+.badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); }
+nav { display: flex; gap: 4px; padding: 8px 16px 0; overflow-x: auto; }
+nav button { border: 0; background: none; color: var(--muted); padding: 8px 12px; font: inherit;
+  border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+section { display: none; } section.on { display: block; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.card h2 small { color: var(--muted); font-weight: normal; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+td, th { padding: 5px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.k { color: var(--muted); white-space: nowrap; width: 1%; }
+td.v { white-space: pre-wrap; font-variant-numeric: tabular-nums; }
+.chip a { color: var(--muted); text-decoration: none; margin-left: 2px; } .chip a:hover { color: var(--bad); }
+.scroll { overflow-x: auto; }
+button.btn, .btn { border: 1px solid var(--line); background: var(--chip); color: var(--text); border-radius: 7px;
+  padding: 6px 12px; font: inherit; cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.btn.danger { color: var(--bad); }
+.btn:disabled { opacity: .5; cursor: default; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input, select, textarea { font: inherit; color: var(--text); background: var(--input); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; min-width: 0; }
+input[type=checkbox] { width: 18px; height: 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
+.chip.hub { outline: 1px solid var(--accent); }
+.muted { color: var(--muted); } .small { font-size: 12px; }
+.field { display: grid; grid-template-columns: minmax(150px, 34%) 1fr; gap: 6px 12px; padding: 8px 0;
+  border-bottom: 1px solid var(--line); align-items: start; }
+.field:last-child { border-bottom: 0; }
+.field label { padding-top: 6px; }
+.field .help { grid-column: 2; color: var(--muted); font-size: 12px; margin-top: -2px; }
+.field.dirty label { color: var(--accent); font-weight: 600; }
+.field input[type=text], .field input[type=number], .field input[type=password], .field select { width: 100%; }
+.restart { color: var(--warn); font-size: 11px; margin-left: 4px; }
+.list-ed .item { display: flex; gap: 6px; margin-bottom: 6px; } .list-ed .item input { flex: 1; }
+@media (max-width: 560px) { .field { grid-template-columns: 1fr; } .field .help { grid-column: 1; } }
+pre.term, pre.log { background: var(--code); color: var(--code-text); border-radius: 8px; padding: 10px 12px; margin: 0;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word;
+  height: 60vh; overflow-y: auto; }
+pre.term .cmd { color: #7dd3fc; } pre.log .hl { color: #fde68a; }
+.savebar { position: sticky; bottom: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 14px; margin-top: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.msg { font-size: 14px; } .msg.bad { color: var(--bad); } .msg.ok { color: var(--ok); }
+details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">MeshCore admin</h1>
+  <div class="badges" id="badges"></div>
+  <span class="muted small" id="host"></span>
+</header>
+<nav id="tabs">
+  <button data-tab="overview" class="on">Overview</button>
+  <button data-tab="settings">Settings</button>
+  <button data-tab="live">Live log</button>
+  <button data-tab="journal">Service log</button>
+  <button data-tab="console">Console</button>
+</nav>
+<main>
+
+<section id="overview" class="on">
+  <div class="grid">
+    <div class="card">
+      <h2>Status <small id="updated"></small></h2>
+      <div class="scroll"><table id="status"></table></div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Actions</h2>
+        <div class="row">
+          <button class="btn" data-action="advert">Send advert</button>
+          <button class="btn" data-action="reload">Reload config</button>
+          <button class="btn danger" data-action="restart">Restart repeater</button>
+        </div>
+        <p class="small muted">A silent hotspot sends its advert when one of its home companions wakes it.</p>
+        <div class="row">
+          <span>Coverage probe:</span>
+          <input id="probe-count" type="number" min="1" max="100" value="5" style="width:70px" title="count">
+          <span class="muted">x every</span>
+          <input id="probe-secs" type="number" min="1" max="3600" value="30" style="width:80px" title="seconds">
+          <span class="muted">s</span>
+          <button class="btn" id="probe-start">Start</button>
+          <button class="btn" id="probe-stop">Cancel</button>
+        </div>
+        <div class="msg" id="action-msg"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>Channels <small>forwarded</small></h2>
+        <div class="chips" id="channels"></div>
+        <p class="small muted">Outlined: a room from the backbone hub.</p>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>Blacklist</h2>
+        <div class="chips" id="blacklist"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="bl-name" placeholder="node name" maxlength="31">
+          <button class="btn" id="bl-add">Add</button>
+        </div>
+        <div id="hub-blocks" class="small muted" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h2>Heard nodes <small id="ncount"></small></h2>
+    <div class="scroll"><table id="neighbors"></table></div>
+  </div>
+</section>
+
+<section id="settings">
+  <p class="muted small">Values come from the running repeater. Saving writes only what you changed to its config
+    file (comments kept), then reloads it. Settings marked <span class="restart">restart</span> restart the repeater:
+    it is back on the air in about 6 seconds.</p>
+  <div id="settings-groups" class="grid"></div>
+  <div class="savebar">
+    <button class="btn primary" id="save" disabled>Save</button>
+    <button class="btn" id="revert" disabled>Undo changes</button>
+    <span class="msg" id="save-msg"></span>
+  </div>
+</section>
+
+<section id="live">
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <select id="mon-target"></select>
+      <button class="btn primary" id="mon-start">Start</button>
+      <button class="btn" id="mon-stop" disabled>Stop</button>
+      <input id="mon-filter" placeholder="filter text" style="flex:1; min-width:120px">
+      <label class="small"><input type="checkbox" id="mon-follow" checked> follow</label>
+      <button class="btn" id="mon-clear">Clear</button>
+    </div>
+    <pre class="log" id="mon-out"></pre>
+  </div>
+</section>
+
+<section id="journal">
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <button class="btn primary" id="jr-start">Start</button>
+      <button class="btn" id="jr-stop" disabled>Stop</button>
+      <input id="jr-filter" placeholder="filter text" style="flex:1; min-width:120px">
+      <label class="small"><input type="checkbox" id="jr-follow" checked> follow</label>
+      <button class="btn" id="jr-clear">Clear</button>
+    </div>
+    <pre class="log" id="jr-out"></pre>
+  </div>
+</section>
+
+<section id="console">
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <button class="btn" data-cmd="status">status</button>
+      <button class="btn" data-cmd="stats">stats</button>
+      <button class="btn" data-cmd="neighbors">neighbors</button>
+      <button class="btn" data-cmd="channels">channels</button>
+      <button class="btn" data-cmd="blacklist list">blacklist list</button>
+      <button class="btn" data-cmd="help">help</button>
+    </div>
+    <pre class="term" id="term"></pre>
+    <form id="cli-form" class="row" style="margin-top:8px">
+      <span class="muted">meshcore&gt;</span>
+      <input id="cli" autocomplete="off" spellcheck="false" style="flex:1; font-family: ui-monospace, monospace"
+             placeholder="a command, e.g. get frequency (Tab completes, arrows recall)">
+      <button class="btn primary">Run</button>
+    </form>
+  </div>
+</section>
+
+</main>
+<script>
+"use strict";
+const $ = (s, e = document) => e.querySelector(s);
+const $$ = (s, e = document) => [...e.querySelectorAll(s)];
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k);
+  return e;
+};
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST", body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", "X-MeshCore": "1" } };
+  const r = await fetch(path, opts);
+  let j = {};
+  try { j = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error(j.error || r.status + " " + r.statusText);
+  return j;
+}
+
+/* ---- tabs ---- */
+function showTab(name) {
+  $$("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  $$("main > section").forEach(s => s.classList.toggle("on", s.id === name));
+  try { localStorage.setItem("mc-tab", name); } catch (_) {}
+  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+  if (name === "settings" && !cfg) loadConfig();
+  if (name === "console") $("#cli").focus();
+}
+$$("#tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+
+/* ---- overview ---- */
+let lastChannels = [];
+function badge(text, cls) { return el("span", { class: "badge " + (cls || ""), text }); }
+
+async function refresh() {
+  if (!$("#overview").classList.contains("on") && lastChannels.length) return;
+  let o;
+  try { o = await api("/api/overview"); }
+  catch (e) { $("#updated").textContent = e.message; $("#updated").className = "msg bad"; return; }
+  $("#updated").textContent = "updated " + new Date().toLocaleTimeString();
+  $("#updated").className = "";
+  $("#host").textContent = o.hostname;
+  const st = Object.fromEntries(o.status);
+  const node = (st.node || "").match(/'([^']*)'/);
+  $("#title").textContent = node ? node[1] : "MeshCore admin";
+  document.title = (node ? node[1] + " - " : "") + "MeshCore admin";
+
+  const b = $("#badges"); b.replaceChildren();
+  const role = st.role || "";
+  b.append(badge(role.startsWith("hotspot") ? "hotspot" : "repeater"));
+  if (/rf silent/.test(role)) b.append(badge("RF silent", "warn"));
+  else if (/rf on air/.test(role)) b.append(badge("on air " + (role.match(/on air (\d+m)/) || [, ""])[1], "ok"));
+  if (st.backbone) b.append(badge("hub " + st.backbone.split(" ")[0], st.backbone.startsWith("up") ? "ok" : "bad"));
+
+  const t = $("#status"); t.replaceChildren();
+  for (const [k, v] of o.status) t.append(el("tr", {}, el("td", { class: "k", text: k }), el("td", { class: "v", text: v })));
+
+  lastChannels = o.channels;
+  const ch = $("#channels"); ch.replaceChildren();
+  for (const c of o.channels)
+    ch.append(el("span", { class: "chip" + (c.hub ? " hub" : ""), title: "hash 0x" + c.hash, text: c.name === "-" ? "Public" : c.name }));
+  fillMonTargets();
+
+  const bl = $("#blacklist"); bl.replaceChildren();
+  if (!o.blacklist.length) bl.append(el("span", { class: "muted small", text: "nobody" }));
+  for (const n of o.blacklist)
+    bl.append(el("span", { class: "chip" }, n + " ",
+      el("a", { href: "#", title: "remove", text: "×", onclick: ev => { ev.preventDefault(); act({ action: "blacklist_remove", name: n }); } })));
+  $("#hub-blocks").textContent = o.hub_blocks.length ? "Blocked by the hub: " + o.hub_blocks.join(", ") : "";
+
+  const nt = $("#neighbors"); nt.replaceChildren(el("tr", {}, ...["name", "type", "hops", "rssi", "snr", "last heard", "id"].map(h => el("th", { text: h }))));
+  $("#ncount").textContent = o.neighbors.length + " node(s)";
+  for (const n of o.neighbors.sort((a, c) => a.age - c.age))
+    nt.append(el("tr", {}, el("td", { text: n.name }), el("td", { text: n.type }), el("td", { text: n.hops === 0 ? "direct" : n.hops }),
+      el("td", { text: n.rssi + " dBm" }), el("td", { text: n.snr.toFixed(1) + " dB" }), el("td", { text: ago(n.age) }),
+      el("td", { class: "muted small", text: n.id })));
+  if (!o.neighbors.length) nt.append(el("tr", {}, el("td", { colspan: 7, class: "muted", text: "nothing heard yet" })));
+}
+function ago(s) { return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : (s / 3600).toFixed(1) + " h ago"; }
+
+async function act(body) {
+  const m = $("#action-msg");
+  if (body.action === "restart" && !confirm("Restart the repeater? It is off the air for about 6 seconds.")) return;
+  try { const r = await api("/api/action", body); m.className = "msg ok"; m.textContent = (r.output || "done").trim(); }
+  catch (e) { m.className = "msg bad"; m.textContent = e.message; }
+  setTimeout(refresh, body.action === "restart" ? 7000 : 300);
+}
+$$("[data-action]").forEach(b => b.addEventListener("click", () => act({ action: b.dataset.action })));
+$("#probe-start").addEventListener("click", () => act({ action: "probe", secs: +$("#probe-secs").value, count: +$("#probe-count").value }));
+$("#probe-stop").addEventListener("click", () => act({ action: "probe", secs: 1, count: 0 }));
+$("#bl-add").addEventListener("click", () => { const n = $("#bl-name").value.trim(); if (n) { act({ action: "blacklist_add", name: n }); $("#bl-name").value = ""; } });
+
+/* ---- settings ---- */
+const SF = [5, 6, 7, 8, 9, 10, 11, 12].map(v => [String(v), "SF" + v]);
+const CR = [5, 6, 7, 8].map(v => [String(v), "4/" + v]);
+const GROUPS = [
+  { title: "Station", fields: [
+    { k: "name", label: "Name (callsign)", help: "A repeater uses a bare callsign; a hotspot may add -NN, e.g. ON6URE-1." },
+    { k: "role", label: "Role", type: "select", options: [["repeater", "repeater"], ["hotspot", "personal hotspot"]] },
+    { k: "location", label: "Advertise a position", type: "bool" },
+    { k: "latitude", label: "Latitude", type: "number", step: "any" },
+    { k: "longitude", label: "Longitude", type: "number", step: "any" },
+    { k: "advert_interval", label: "Advert (ID) interval, s", type: "number", min: 0, help: "Ham ID at least once an hour; 1800 by default." },
+    { k: "forward", label: "Forward traffic", type: "bool" },
+  ]},
+  { title: "Hotspot", fields: [
+    { k: "home", label: "Home devices", type: "list", ph: "ON6URE*", help: "Your own devices (a trailing * matches any SSID). They are relayed up at full power and they wake a silent hotspot." },
+    { k: "affinity", label: "Repeaters to bridge to", type: "list", ph: "ON0XYZ" },
+    { k: "hotspot_power_high", label: "Uplink power, chip dBm", type: "number", min: -9, max: 22 },
+    { k: "hotspot_power_low", label: "Downlink power, chip dBm", type: "number", min: -9, max: 22 },
+    { k: "hotspot_awake", label: "On the air after a home companion, s", type: "number", min: 0, help: "0 = always on the air. 3600 = silent an hour after the last one." },
+  ]},
+  { title: "Radio", fields: [
+    { k: "frequency", label: "Frequency, MHz", type: "number", step: "0.001", help: "434.890 is the IARU R1 ham MeshCore frequency." },
+    { k: "bandwidth", label: "Bandwidth", type: "select", options: [["62.5", "62.5 kHz"], ["125", "125 kHz"], ["250", "250 kHz"], ["500", "500 kHz"]] },
+    { k: "spreading_factor", label: "Spreading factor", type: "select", options: SF },
+    { k: "coding_rate", label: "Coding rate", type: "select", options: CR },
+    { k: "tx_power", label: "TX power, chip dBm", type: "number", min: -9, max: 22, help: "The PA adds gain on top. Stay within your licence." },
+    { k: "use_cad", label: "Listen before talk (CAD)", type: "bool" },
+    { k: "preamble", label: "Preamble, symbols", type: "number", min: 6, adv: true },
+    { k: "sync_word", label: "Sync word", adv: true, help: "private (0x1424, MeshCore default) or public" },
+    { k: "crc", label: "CRC", type: "bool", adv: true },
+    { k: "iq_inverted", label: "IQ inverted", type: "bool", adv: true },
+  ]},
+  { title: "Rooms and services", fields: [
+    { k: "room", label: "Rooms", type: "list", ph: "pra", help: "Hashtag rooms, without the #. The backbone hub can add more." },
+    { k: "ping_pong", label: "Answer ping", type: "bool" },
+    { k: "ping_channel", label: "Ping channel", help: "#mesh by default; any = every channel." },
+    { k: "timeofday", label: "Answer time / date", type: "bool" },
+    { k: "mbox", label: "#mbox mailbox", type: "bool", help: "Runs on repeaters; a hotspot forwards #mbox up." },
+    { k: "probe_allow", label: "Who may start a probe", type: "list", ph: "ON6URE*" },
+    { k: "public_channel", label: "Extra public channels", type: "list", ph: "name:hex key", adv: true },
+  ]},
+  { title: "Blacklist", fields: [
+    { k: "blacklist", label: "Ignored node names", type: "list", ph: "name" },
+  ]},
+  { title: "Backbone (IP fallback)", fields: [
+    { k: "backbone", label: "Connect to the hub", type: "bool" },
+    { k: "backbone_host", label: "Hub host" },
+    { k: "backbone_port", label: "Hub port", type: "number" },
+    { k: "backbone_hub_key", label: "Hub public key", help: "64 hex characters, from the hub operator." },
+    { k: "backbone_observe", label: "Observe (report what it hears)", type: "bool" },
+    { k: "backbone_bridge", label: "Bridge (relay over IP)", type: "bool" },
+    { k: "backbone_rate", label: "Max frames from the hub / min", type: "number", min: 1, max: 600 },
+    { k: "backbone_policy", label: "Take rooms and blocks from the hub", type: "bool" },
+  ]},
+  { title: "APRS-IS iGate", fields: [
+    { k: "aprs_enable", label: "Enabled", type: "bool" },
+    { k: "aprs_call", label: "Callsign" },
+    { k: "aprs_passcode", label: "Passcode", help: "auto = computed from the callsign." },
+    { k: "aprs_symbol", label: "Own symbol" },
+    { k: "aprs_node_symbol", label: "Symbol for gated nodes" },
+    { k: "aprs_comment", label: "Comment" },
+    { k: "aprs_altitude", label: "Altitude, m", type: "number" },
+    { k: "aprs_beacon_interval", label: "Beacon interval, s", type: "number", min: 0 },
+    { k: "aprs_node_rate", label: "Re-gate a node at most every, s", type: "number", min: 0, adv: true },
+    { k: "aprs_host", label: "Server", adv: true },
+    { k: "aprs_port", label: "Port", type: "number", adv: true },
+  ]},
+  { title: "Admin page", fields: [
+    { k: "web_password", label: "New password", type: "password", help: "User admin. Leave blank to keep the current one." },
+    { k: "web_port", label: "Port", type: "number", min: 1, max: 65535 },
+  ]},
+  { title: "Hardware", adv: true, fields: [
+    { k: "spi_dev", label: "SPI device" }, { k: "spi_speed", label: "SPI speed, Hz", type: "number" },
+    { k: "gpio_chip", label: "GPIO chip" }, { k: "gpio_reset", label: "NRST pin", type: "number" },
+    { k: "gpio_busy", label: "BUSY pin", type: "number" }, { k: "gpio_dio1", label: "DIO1 pin", type: "number" },
+    { k: "gpio_nss", label: "NSS pin", type: "number" },
+    { k: "rf_switch", label: "RF switch", type: "select", options: [["dio2", "DIO2"], ["external", "external RXEN/TXEN"]] },
+    { k: "gpio_rxen", label: "RXEN pin", type: "number" }, { k: "gpio_txen", label: "TXEN pin", type: "number" },
+    { k: "use_leds", label: "LEDs", type: "bool" },
+    { k: "gpio_led_on", label: "ON LED pin", type: "number" }, { k: "gpio_led_data", label: "DATA LED pin", type: "number" },
+    { k: "tcxo_voltage", label: "TCXO voltage", type: "number", step: "0.1", help: "Detected at start: a module without a TCXO runs on its crystal." },
+    { k: "ocp", label: "Over-current limit" },
+  ]},
+];
+
+let cfg = null, orig = {}, cur = {};
+const isList = f => f.type === "list";
+const norm = (f, v) => f.type === "bool" ? String(v === true || v === "true") : (v == null ? "" : String(v));
+
+async function loadConfig() {
+  const box = $("#settings-groups");
+  box.replaceChildren(el("div", { class: "muted", text: "loading..." }));
+  try { cfg = await api("/api/config"); }
+  catch (e) { box.replaceChildren(el("div", { class: "msg bad", text: e.message })); cfg = null; return; }
+  orig = {}; cur = {};
+  for (const g of GROUPS) for (const f of g.fields) {
+    let v = isList(f) ? (cfg.lists[f.k] || []).slice() : norm(f, cfg.values[f.k]);
+    if (f.k === "room") v = v.map(x => x.replace(/^#/, ""));
+    if (f.k === "ping_channel") v = v.replace(/^#/, "");
+    orig[f.k] = v; cur[f.k] = Array.isArray(v) ? v.slice() : v;
+  }
+  renderSettings();
+}
+
+function renderSettings() {
+  const box = $("#settings-groups"); box.replaceChildren();
+  const restart = new Set(cfg.restart_keys);
+  for (const g of GROUPS) {
+    const card = el("div", { class: "card" }, el("h2", { text: g.title }));
+    let target = card;
+    if (g.adv) { const d = el("details", {}, el("summary", { text: "show" })); card.append(d); target = d; }
+    const adv = el("details", {}, el("summary", { text: "advanced" }));
+    for (const f of g.fields) {
+      const row = fieldRow(f, restart.has(f.k));
+      (f.adv && !g.adv ? adv : target).append(row);
+    }
+    if (adv.children.length > 1) target.append(adv);
+    box.append(card);
+  }
+  updateDirty();
+}
+
+function fieldRow(f, needsRestart) {
+  const id = "f-" + f.k;
+  const lab = el("label", { for: id }, f.label, needsRestart ? el("span", { class: "restart", text: "restart" }) : null);
+  let input;
+  if (isList(f)) {
+    input = el("div", { class: "list-ed" });
+    const draw = () => {
+      input.replaceChildren();
+      cur[f.k].forEach((v, i) => input.append(el("div", { class: "item" },
+        el("input", { type: "text", value: v, placeholder: f.ph || "", oninput: e => { cur[f.k][i] = e.target.value; updateDirty(); } }),
+        el("button", { class: "btn", type: "button", title: "remove", text: "×", onclick: () => { cur[f.k].splice(i, 1); draw(); updateDirty(); } }))));
+      input.append(el("button", { class: "btn", type: "button", text: "+ add", onclick: () => { cur[f.k].push(""); draw(); updateDirty(); $$("input", input).at(-1).focus(); } }));
+    };
+    draw();
+  } else if (f.type === "bool") {
+    input = el("input", { id, type: "checkbox" });
+    input.checked = cur[f.k] === "true";
+    input.addEventListener("change", () => { cur[f.k] = String(input.checked); updateDirty(); });
+  } else if (f.type === "select") {
+    input = el("select", { id });
+    const opts = f.options.slice();
+    if (cur[f.k] && !opts.some(o => o[0] === cur[f.k])) opts.push([cur[f.k], cur[f.k]]);
+    for (const [v, t] of opts) input.append(el("option", { value: v, text: t }));
+    input.value = cur[f.k];
+    input.addEventListener("change", () => { cur[f.k] = input.value; updateDirty(); });
+  } else {
+    input = el("input", { id, type: f.type === "number" ? "number" : f.type === "password" ? "password" : "text" });
+    for (const a of ["min", "max", "step"]) if (f[a] !== undefined) input.setAttribute(a, f[a]);
+    if (f.type === "password") input.placeholder = cfg.secret_set[f.k] ? "(set - leave blank to keep)" : "(not set)";
+    input.value = cur[f.k];
+    input.addEventListener("input", () => { cur[f.k] = input.value; updateDirty(); });
+  }
+  const row = el("div", { class: "field", "data-k": f.k }, lab, input);
+  if (f.help) row.append(el("div", { class: "help", text: f.help }));
+  return row;
+}
+
+function changed() {
+  const out = {};
+  for (const k of Object.keys(cur)) {
+    const a = cur[k], b = orig[k];
+    if (Array.isArray(a)) { const c = a.map(x => x.trim()).filter(Boolean); if (JSON.stringify(c) !== JSON.stringify(b)) out[k] = c; }
+    else if (a !== b && !(k === "web_password" && a === "")) out[k] = a;
+  }
+  return out;
+}
+function updateDirty() {
+  const ch = changed(), n = Object.keys(ch).length;
+  $$(".field").forEach(r => r.classList.toggle("dirty", r.dataset.k in ch));
+  $("#save").disabled = $("#revert").disabled = n === 0;
+  const rs = cfg ? Object.keys(ch).filter(k => cfg.restart_keys.includes(k)) : [];
+  $("#save").textContent = n ? (rs.length ? "Save and restart" : "Save") + " (" + n + ")" : "Save";
+  $("#save-msg").textContent = ""; $("#save-msg").className = "msg";
+}
+$("#revert").addEventListener("click", () => { for (const k in orig) cur[k] = Array.isArray(orig[k]) ? orig[k].slice() : orig[k]; renderSettings(); });
+$("#save").addEventListener("click", async () => {
+  const ch = changed(), values = {}, lists = {};
+  for (const [k, v] of Object.entries(ch)) (Array.isArray(v) ? lists : values)[k] = v;
+  const rs = Object.keys(ch).filter(k => cfg.restart_keys.includes(k));
+  if (rs.length && !confirm("This restarts the repeater (" + rs.join(", ") + "). It is off the air for about 6 seconds. Continue?")) return;
+  const m = $("#save-msg");
+  $("#save").disabled = true;
+  try {
+    const r = await api("/api/config", { values, lists });
+    m.className = "msg ok"; m.textContent = "Saved - " + r.applied;
+    const wait = r.applied === "restart" || "web_password" in ch || "web_port" in ch ? 7000 : 600;
+    setTimeout(() => { loadConfig().then(() => { $("#save-msg").className = "msg ok"; $("#save-msg").textContent = "Saved - " + r.applied; }); refresh(); }, wait);
+  } catch (e) { m.className = "msg bad"; m.textContent = e.message; $("#save").disabled = false; }
+});
+
+/* ---- live log + service log ---- */
+function fillMonTargets() {
+  const s = $("#mon-target"), keep = s.value;
+  const opts = [["all", "Everything"], ["public", "Public channel messages"], ["adverts", "Adverts"], ["drops", "Dropped packets"], ["tx", "Transmitted"]];
+  for (const c of lastChannels) if (c.name !== "-") opts.push([c.name.replace(/^#/, ""), "Channel " + c.name]);
+  if (s.options.length === opts.length) return;
+  s.replaceChildren(...opts.map(([v, t]) => el("option", { value: v, text: t })));
+  if (keep) s.value = keep;
+}
+function stream(prefix, urlFn) {
+  let es = null;
+  const out = $("#" + prefix + "-out"), lines = [];
+  const show = () => {
+    const f = $("#" + prefix + "-filter").value.toLowerCase();
+    out.textContent = (f ? lines.filter(l => l.toLowerCase().includes(f)) : lines).join("\n");
+    if ($("#" + prefix + "-follow").checked) out.scrollTop = out.scrollHeight;
+  };
+  const stop = () => { if (es) es.close(); es = null; $("#" + prefix + "-start").disabled = false; $("#" + prefix + "-stop").disabled = true; };
+  $("#" + prefix + "-start").addEventListener("click", () => {
+    stop();
+    es = new EventSource(urlFn());
+    $("#" + prefix + "-start").disabled = true; $("#" + prefix + "-stop").disabled = false;
+    es.onmessage = ev => { lines.push(ev.data); if (lines.length > 3000) lines.splice(0, lines.length - 3000); show(); };
+    es.onerror = () => { lines.push("# connection lost - retrying..."); show(); };
+  });
+  $("#" + prefix + "-stop").addEventListener("click", stop);
+  $("#" + prefix + "-clear").addEventListener("click", () => { lines.length = 0; show(); });
+  $("#" + prefix + "-filter").addEventListener("input", show);
+}
+stream("mon", () => "/api/monitor?target=" + encodeURIComponent($("#mon-target").value || "all"));
+stream("jr", () => "/api/journal");
+
+/* ---- console ---- */
+const COMMANDS = ["help", "status", "stats", "get", "set", "freq", "neighbors", "channels", "blacklist", "probe", "advert", "save", "reload", "quit"];
+const hist = []; let hpos = 0;
+async function run(line) {
+  const t = $("#term");
+  t.append(el("span", { class: "cmd", text: "meshcore> " + line + "\n" }));
+  if (/^(save|quit)\b/.test(line) && !confirm(line.startsWith("quit")
+      ? "'quit' stops the repeater; systemd starts it again in about 5 seconds. Run it?"
+      : "'save' rewrites the config file from the running settings and drops its comments. Run it?")) {
+    t.append("(cancelled)\n"); return;
+  }
+  try { const r = await api("/api/cli", { line }); t.append(r.output || "(no output)\n"); }
+  catch (e) { t.append("error: " + e.message + "\n"); }
+  t.scrollTop = t.scrollHeight;
+}
+$("#cli-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const line = $("#cli").value.trim(); if (!line) return;
+  hist.push(line); hpos = hist.length; $("#cli").value = ""; run(line);
+});
+$("#cli").addEventListener("keydown", ev => {
+  if (ev.key === "ArrowUp" && hpos > 0) { $("#cli").value = hist[--hpos]; ev.preventDefault(); }
+  else if (ev.key === "ArrowDown") { hpos = Math.min(hist.length, hpos + 1); $("#cli").value = hist[hpos] || ""; ev.preventDefault(); }
+  else if (ev.key === "Tab") {
+    ev.preventDefault();
+    const v = $("#cli").value, parts = v.split(" ");
+    const pool = parts.length === 1 ? COMMANDS
+      : (/^(get|set)$/.test(parts[0]) && parts.length === 2 && cfg) ? Object.keys(cfg.values).concat(Object.keys(cfg.lists))
+      : parts[0] === "blacklist" && parts.length === 2 ? ["add", "remove", "list"] : [];
+    const hits = pool.filter(c => c.startsWith(parts.at(-1)));
+    if (hits.length === 1) { parts[parts.length - 1] = hits[0]; $("#cli").value = parts.join(" ") + " "; }
+    else if (hits.length > 1) $("#term").append(hits.join("  ") + "\n");
+  }
+});
+$$("[data-cmd]").forEach(b => b.addEventListener("click", () => run(b.dataset.cmd)));
+
+/* ---- start ---- */
+let tab = location.hash.slice(1);
+if (!tab) try { tab = localStorage.getItem("mc-tab") || ""; } catch (_) {}
+window.addEventListener("hashchange", () => { const t = location.hash.slice(1); if ($("#" + t)) showTab(t); });
+showTab(tab && $("main > #" + tab) ? tab : "overview");
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
