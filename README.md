@@ -649,16 +649,16 @@ hotspot_power_low  = -9            # downlink: lowest usable for local delivery
 hotspot_awake      = 3600          # on the air this long after a companion (0 = always)
 ```
 
-**Attended, not unmanned.** A hotspot is **RF silent** until it hears a companion
-directly. Silent means it sends nothing at all: no adverts, no relays, no replies,
+**Attended, not unmanned.** A hotspot is **RF silent** until it hears one of your
+own companions directly. Silent means it sends nothing at all: no adverts, no relays, no replies,
 and no frames from the backbone hub.
-- **What wakes it:** a companion heard with **0 hops**, by either its advert
-  (chat type) or a message on a public channel. That means its operator is
+- **What wakes it:** one of your `home` devices heard with **0 hops**, by either
+  its advert (chat type) or a message on a public channel. That means you are
   nearby, not somewhere down the mesh.
-- **Who counts as a companion:** anyone who isn't a repeater. `ON0*` callsigns,
-  the affinity repeaters, and names heard advertising as a repeater, room or
-  sensor don't count. Another hotspot advertises as a repeater, so it doesn't
-  count either.
+- **What doesn't:** anyone else's companion, even one heard directly, and
+  anything that is a repeater. `ON0*` callsigns, the affinity repeaters, and
+  names heard advertising as a repeater, room or sensor never count. Another
+  hotspot advertises as a repeater, so it doesn't count either.
 - **When it wakes:** it identifies at once with a self-advert, then works as
   above.
 - **When it goes silent again:** `hotspot_awake` seconds after the last

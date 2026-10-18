@@ -186,14 +186,14 @@ static void learn_affinity(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE])
                  "repeaters may be misclassified; narrow the affinity list", MC_MAX_AFFINITY);
 }
 
-/* A companion that a hotspot hears directly makes it an attended station. A
- * companion is anyone who isn't a repeater: not an ON0 callsign (Belgian
- * repeaters, the hub's repeater prefix), not an affinity repeater, not this node,
- * and not a name we heard advertise as a repeater, room or sensor (another
- * hotspot advertises as a repeater too). */
+/* A companion that a hotspot hears directly makes it an attended station. Only
+ * the operator's own devices count (`home`), and never a repeater: not an ON0
+ * callsign (Belgian repeaters, the hub's repeater prefix), not an affinity
+ * repeater, not this node, and not a name we heard advertise as a repeater, room
+ * or sensor (another hotspot advertises as a repeater too). */
 static bool is_companion_name(const mc_mesh_t *m, const char *name)
 {
-    if (!name || !name[0] || !strncasecmp(name, "ON0", 3) ||
+    if (!name || !name[0] || !config_is_home(m->cfg, name) || !strncasecmp(name, "ON0", 3) ||
         config_is_affinity(m->cfg, name) || !strcasecmp(name, m->cfg->name))
         return false;
     for (int i = 0; i < MESH_MAX_NEIGHBORS; i++) {
@@ -204,8 +204,8 @@ static bool is_companion_name(const mc_mesh_t *m, const char *name)
     return true;
 }
 
-/* Keep a hotspot on the air after hearing a companion directly on RF (0 hops:
- * the operator is here, not somewhere down the mesh). Waking from silence it
+/* Keep a hotspot on the air after hearing one of the operator's own companions
+ * directly on RF (0 hops: the operator is here, not somewhere down the mesh). Waking from silence it
  * identifies first with a self-advert. */
 static void hotspot_wake(mc_mesh_t *m, const mc_packet_t *pkt, const char *who)
 {

@@ -1088,6 +1088,7 @@ static void test_hotspot(void)
     /* 6. ping/pong works in hotspot role (any sender) */
     { mc_config_t hc; config_defaults(&hc);
       config_set(&hc, "role", "hotspot");
+      config_set(&hc, "hotspot_awake", "0");              /* always on (silence: below) */
       config_set(&hc, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
       hc.ping_pong = true; hc.ping_channel[0] = '\0';   /* answer on any channel */
       config_to_sx126x(&hc, &radio); sx126x_init(&radio);
@@ -1196,11 +1197,22 @@ static void test_hotspot_silent(void)
     mesh_on_recv(&m, raw, (size_t)n, -50, 40);
     CHECK(mesh_rf_silent(&m, hal_millis()), "another hotspot's message doesn't wake");
 
+    build_public_text(&cfg, "ON4ABC-1: hello nearby", &p);
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    mc_identity_t stranger; mc_identity_generate(&stranger);
+    info.type = ADV_TYPE_CHAT; info.name = "ON4ABC-1";
+    mc_advert_build(&adv, &stranger, &info, 1001);
+    n = pkt_serialize(&adv, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    CHECK(mesh_rf_silent(&m, hal_millis()) && first_used(&m) < 0,
+          "someone else's companion heard directly (message, advert) doesn't wake");
+
     build_public_text(&cfg, "ON6URE-7: ping", &p);
     n = pkt_serialize(&p, raw, sizeof(raw));
     mesh_on_recv(&m, raw, (size_t)n, -50, 40);
     CHECK(!mesh_rf_silent(&m, hal_millis()) && !strcmp(m.hs_woken_by, "ON6URE-7"),
-          "a companion's message heard directly wakes it");
+          "a home companion's message heard directly wakes it");
     CHECK(queued(&m, PAYLOAD_TYPE_ADVERT) == 1 && m.stats.adverts_sent == 1,
           "waking, it identifies with a self-advert");
     CHECK(m.stats.pong_sent == 1 && m.stats.fwd_flood == 1,
@@ -1223,12 +1235,13 @@ static void test_hotspot_silent(void)
 
     mc_mesh_t m2; mesh_init(&m2, &id, &cfg);
     mc_identity_t comp; mc_identity_generate(&comp);
-    info.type = ADV_TYPE_CHAT; info.name = "OR7F-12";
+    info.type = ADV_TYPE_CHAT; info.name = "ON6URE-12";
     mc_advert_build(&adv, &comp, &info, 1002);
     n = pkt_serialize(&adv, raw, sizeof(raw));
     mesh_on_recv(&m2, raw, (size_t)n, -50, 40);
-    CHECK(!mesh_rf_silent(&m2, hal_millis()) && queued(&m2, PAYLOAD_TYPE_ADVERT) == 1,
-          "a companion's advert heard directly wakes it too");
+    CHECK(!mesh_rf_silent(&m2, hal_millis()) && m2.stats.adverts_sent == 1 &&
+          queued(&m2, PAYLOAD_TYPE_ADVERT) == 2,
+          "a home companion's advert heard directly wakes it too (own ID + its advert uplinked)");
 
     mc_config_t on = cfg; on.hotspot_awake = 0;
     mc_mesh_t m3; mesh_init(&m3, &id, &on);

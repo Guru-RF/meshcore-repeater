@@ -339,7 +339,7 @@ the repeater's RF flood backoff.
   configured.
 - **`role`:** `"repeater"` or `"hotspot"` (see [Hotspots](#hotspots)).
 - **`rf_silent`:** hotspots only. `true` while the hotspot is RF silent because it
-  hasn't heard a companion nearby (see [Hotspots](#hotspots)).
+  hasn't heard one of its home companions nearby (see [Hotspots](#hotspots)).
 - **`policy`:** the [POLICY](#policy-0x22-hub--repeater-any-role) set the node
   has applied:
   - `version` of that set, 0 while it has none;
@@ -651,9 +651,9 @@ is for a repeater.
     affinity repeaters, as on RF;
   - nothing from the hub is ever transmitted at the hotspot's uplink power.
 - **RF silent:** a hotspot is an attended station.
-  - It transmits nothing until it hears a companion directly on RF, meaning a
-    non-repeater at 0 hops, and keeps transmitting until `hotspot_awake`
-    seconds after the last one.
+  - It transmits nothing until it hears one of its `home` companions directly
+    on RF, at 0 hops. It keeps transmitting until `hotspot_awake` seconds after
+    the last one.
   - While silent it still observes. Each FRAME it gets is reported as
     disposition 3 (local), and it offers nothing as BRIDGE.
   - STATUS shows the state as `rf_silent`, and the hotspot sends a STATUS at once
