@@ -243,6 +243,16 @@ int main(int argc, char **argv)
     if (bb.state != BB_OFF)
         mesh.bb = &bb;
 
+    /* Central rooms and blocks: the hub's last set stays in force while the hub
+     * is unreachable. Opting out (backbone_policy = false) forgets it. */
+    if (bb.state != BB_OFF && cfg.backbone_policy) {
+        if (config_policy_load(&cfg, id.pub) == 0)
+            log_info("backbone: kept policy v%u - %d room(s), %d block(s) from the hub",
+                     cfg.policy.version, cfg.policy_rooms, cfg.policy.n_names + cfg.policy.n_keys);
+    } else if (!cfg.backbone_policy && remove(cfg.backbone_policy_file) == 0) {
+        log_info("backbone: backbone_policy = false - forgot the hub's rooms and blocks");
+    }
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);

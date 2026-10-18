@@ -754,6 +754,23 @@ go down to the household at `hotspot_power_low`. So a hotspot with no repeater
 in RF range still reaches the mesh, and one with a repeater in range gets the
 hub as a fallback.
 
+**Central rooms and blocks.** The hub's room admins manage the network's rooms
+and blocked users on the portal, and the hub pushes them to every node on the
+backbone, repeaters and hotspots alike.
+- **Rooms:** a hub room works like a `room` line. The hub adds rooms on top of
+  this node's own and never removes those.
+- **Blocks:** a blocked name or key is ignored like a `blacklist` entry. A block
+  that matches this node's own name or key is ignored.
+- **Hub unreachable:** the last set is kept in `backbone_policy_file` and stays
+  in force, also across a restart.
+- **Opting out:** `backbone_policy = false` keeps only this node's own rooms and
+  blacklist.
+- **Where it shows:**
+  - `status` shows `policy v<version>` on the `backbone` line, plus how many
+    rooms and blocks came from the hub;
+  - `channels` marks the hub's rooms;
+  - `blacklist list` lists the hub's blocks.
+
 ```
 island A               internet                island B
  ~~~ RF ~~~ repeater ── UDP 4405 ── hub ── UDP 4405 ── repeater ~~~ RF ~~~
@@ -773,6 +790,7 @@ backbone_hub_key  = <the hub's public key, 64 hex>
 backbone_observe  = true
 backbone_bridge   = false        # true once the hub operator enables bridging
 backbone_rate     = 30           # max frames from the hub transmitted per minute
+backbone_policy   = true         # rooms and blocks from the hub (default true)
 ```
 
 The hub admits only repeaters on its **allowlist**, by public key. Send the hub

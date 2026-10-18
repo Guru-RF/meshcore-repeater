@@ -73,6 +73,8 @@ void config_defaults(mc_config_t *cfg)
     cfg->backbone_observe = true;
     cfg->backbone_bridge  = false;
     cfg->backbone_rate    = 30;
+    cfg->backbone_policy  = true;      /* rooms and blocks from the hub, when the backbone is on */
+    snprintf(cfg->backbone_policy_file, sizeof(cfg->backbone_policy_file), "%s", "backbone-policy.txt");
 
     /* APRS-IS RX iGate (off by default; own beacon reuses latitude/longitude) */
     cfg->aprs_enable         = false;
@@ -230,12 +232,38 @@ int config_blacklist_remove(mc_config_t *cfg, const char *name)
     return -1;                                     /* not found */
 }
 
+bool config_ascii_eq(const char *a, const char *b)
+{
+    for (;; a++, b++) {
+        unsigned char x = (unsigned char)*a, y = (unsigned char)*b;
+        if (x >= 'A' && x <= 'Z') x = (unsigned char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (unsigned char)(y - 'A' + 'a');
+        if (x != y) return false;
+        if (x == '\0') return true;
+    }
+}
+
+/* The file's blacklist, plus the hub's name blocks (POLICY). */
 bool config_is_blacklisted(const mc_config_t *cfg, const char *name)
 {
     if (!name || name[0] == '\0')
         return false;
     for (int i = 0; i < cfg->n_blacklist; i++)
         if (!strcasecmp(cfg->blacklist[i], name))
+            return true;
+    if (cfg->backbone_policy)
+        for (int i = 0; i < cfg->policy.n_names; i++)
+            if (config_ascii_eq(cfg->policy.names[i], name))
+                return true;
+    return false;
+}
+
+bool config_is_key_blocked(const mc_config_t *cfg, const uint8_t pub[32])
+{
+    if (!cfg->backbone_policy)
+        return false;
+    for (int i = 0; i < cfg->policy.n_keys; i++)
+        if (!memcmp(cfg->policy.keys[i], pub, 32))
             return true;
     return false;
 }
@@ -339,7 +367,10 @@ static int add_public_channel(mc_config_t *cfg, const char *val)
  * SHA256("#name")[0..15]; MeshCore hashes the region name WITH a single leading
  * '#', so we normalise to exactly one. Names are case-sensitive (hashed verbatim).
  * Returns 0 ok/dup, -2 invalid/full. */
-static int add_room(mc_config_t *cfg, const char *val)
+static int add_room_ex(mc_config_t *cfg, const char *val, bool hub);
+static int add_room(mc_config_t *cfg, const char *val) { return add_room_ex(cfg, val, false); }
+
+static int add_room_ex(mc_config_t *cfg, const char *val, bool hub)
 {
     /* Trim into a buffer wider than the limit so an over-long name is REJECTED
      * below, not silently truncated into a wrong-hash region. */
@@ -366,6 +397,7 @@ static int add_room(mc_config_t *cfg, const char *val)
         return -2;
 
     snprintf(cfg->rooms[cfg->n_rooms], MC_ROOM_NAME_LEN, "%s", name);
+    cfg->room_hub[cfg->n_rooms] = hub;
     uint8_t digest[32];
     SHA256_CTX c;
     sha256_init(&c);
@@ -377,7 +409,11 @@ static int add_room(mc_config_t *cfg, const char *val)
     /* A MeshCore hashtag channel uses the SAME key = SHA256("#name")[0..15]. Also
      * register it as a (derived) public channel so we decrypt, forward and monitor
      * its plain-flood group messages - not just match a transport code. */
-    if (register_channel(cfg, name, digest, 16, true) == -2)
+    int had = cfg->n_public_channels;
+    int rc = register_channel(cfg, name, digest, 16, true);
+    if (hub && cfg->n_public_channels > had)
+        cfg->public_channels[had].hub = true;      /* removed again with the hub's set */
+    if (rc == -2)
         log_warn("config: room '%s' added as a region, but the channel list is full "
                  "(max %d) - its plain-flood messages won't be decrypted/forwarded",
                  name, MC_MAX_PUBLIC_CHANNELS);
@@ -516,6 +552,12 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
     if (!strcasecmp(key, "backbone_observe")) { if (!parse_bool(val, &b)) return -2; cfg->backbone_observe = b; return 0; }
     if (!strcasecmp(key, "backbone_bridge"))  { if (!parse_bool(val, &b)) return -2; cfg->backbone_bridge = b; return 0; }
     if (!strcasecmp(key, "backbone_rate"))    { if (!parse_u32(val, &u) || u < 1 || u > 600) return -2; cfg->backbone_rate = u; return 0; }
+    if (!strcasecmp(key, "backbone_policy"))  { if (!parse_bool(val, &b)) return -2; cfg->backbone_policy = b; return 0; }
+    if (!strcasecmp(key, "backbone_policy_file")) {
+        if (!val[0] || strlen(val) >= sizeof(cfg->backbone_policy_file)) return -2;
+        snprintf(cfg->backbone_policy_file, sizeof(cfg->backbone_policy_file), "%s", val);
+        return 0;
+    }
     if (!strcasecmp(key, "public_channel")) { return add_public_channel(cfg, val); }
     if (!strcasecmp(key, "room"))           { return add_room(cfg, val); }
     if (!strcasecmp(key, "blacklist")) { return config_blacklist_add(cfg, val) < 0 ? -2 : 0; }
@@ -610,6 +652,8 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "backbone_observe")) { snprintf(out, outsz, "%s", cfg->backbone_observe ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "backbone_bridge"))  { snprintf(out, outsz, "%s", cfg->backbone_bridge ? "true" : "false"); return 0; }
     if (!strcasecmp(key, "backbone_rate"))    { snprintf(out, outsz, "%u", cfg->backbone_rate); return 0; }
+    if (!strcasecmp(key, "backbone_policy"))  { snprintf(out, outsz, "%s", cfg->backbone_policy ? "true" : "false"); return 0; }
+    if (!strcasecmp(key, "backbone_policy_file")) { snprintf(out, outsz, "%s", cfg->backbone_policy_file); return 0; }
     if (!strcasecmp(key, "public_channel"))   { snprintf(out, outsz, "%d configured", cfg->n_public_channels); return 0; }
     if (!strcasecmp(key, "room"))             { snprintf(out, outsz, "%d configured", cfg->n_rooms); return 0; }
     if (!strcasecmp(key, "blacklist"))        { snprintf(out, outsz, "%d entries", cfg->n_blacklist); return 0; }
@@ -663,11 +707,145 @@ static void config_ensure_ping_channel(mc_config_t *cfg)
         config_ensure_hashtag_channel(cfg, "#mbox");
 }
 
+/* Drop the hub rooms (and the channels only they added), then add the rooms of
+ * the kept POLICY set on top of the file's own. A room in both is served once. */
+static void config_policy_merge(mc_config_t *cfg)
+{
+    int w = 0;
+    for (int i = 0; i < cfg->n_rooms; i++) {
+        if (cfg->room_hub[i])
+            continue;
+        if (w != i) {
+            memcpy(cfg->rooms[w], cfg->rooms[i], MC_ROOM_NAME_LEN);
+            memcpy(cfg->room_key[w], cfg->room_key[i], 16);
+        }
+        cfg->room_hub[w++] = false;
+    }
+    cfg->n_rooms = w;
+    w = 0;
+    for (int i = 0; i < cfg->n_public_channels; i++) {
+        if (cfg->public_channels[i].hub)
+            continue;
+        if (w != i)
+            cfg->public_channels[w] = cfg->public_channels[i];
+        w++;
+    }
+    cfg->n_public_channels = w;
+
+    cfg->policy_rooms = 0;
+    cfg->policy_skipped = cfg->policy.skipped;
+    if (!cfg->backbone_policy)
+        return;
+    for (int i = 0; i < cfg->policy.n_rooms; i++) {
+        int had = cfg->n_rooms;
+        bool served = false;
+        for (int k = 0; k < had; k++)
+            if (!strcmp(cfg->rooms[k], cfg->policy.rooms[i]))
+                served = true;                       /* a local room line already */
+        if (served || (add_room_ex(cfg, cfg->policy.rooms[i], true) == 0 && cfg->n_rooms > had))
+            cfg->policy_rooms++;
+        else
+            cfg->policy_skipped++;                   /* the room table is full */
+    }
+}
+
+void config_set_policy(mc_config_t *cfg, const mc_policy_t *p, const uint8_t own_pub[32])
+{
+    mc_policy_t *d = &cfg->policy;
+    d->version = p->version;
+    d->skipped = p->skipped;
+    d->n_rooms = p->n_rooms;
+    memcpy(d->rooms, p->rooms, sizeof(d->rooms));
+    d->n_names = d->n_keys = 0;
+    for (int i = 0; i < p->n_names; i++) {
+        if (config_ascii_eq(p->names[i], cfg->name)) {
+            log_warn("backbone: ignoring the hub's block of this node's own name '%s'", p->names[i]);
+            continue;
+        }
+        memcpy(d->names[d->n_names++], p->names[i], MC_BLACKLIST_NAME_LEN);
+    }
+    for (int i = 0; i < p->n_keys; i++) {
+        if (own_pub && !memcmp(p->keys[i], own_pub, 32)) {
+            log_warn("backbone: ignoring the hub's block of this node's own key");
+            continue;
+        }
+        memcpy(d->keys[d->n_keys++], p->keys[i], 32);
+    }
+    config_policy_merge(cfg);
+}
+
+/* The kept set is a small text file: "key = value" per line, values verbatim
+ * (a room keeps its '#'; only a line STARTING with '#' is a comment). */
+int config_policy_save(const mc_config_t *cfg)
+{
+    const mc_policy_t *p = &cfg->policy;
+    char tmp[sizeof(cfg->backbone_policy_file) + 8];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", cfg->backbone_policy_file);
+    FILE *f = fopen(tmp, "w");
+    if (!f)
+        return -1;
+    fprintf(f, "# Rooms and blocks from the backbone hub (POLICY). Written by "
+               "meshcore-repeater - don't edit.\n");
+    fprintf(f, "version = %u\nskipped = %d\n", p->version, p->skipped);
+    for (int i = 0; i < p->n_rooms; i++)
+        fprintf(f, "room = %s\n", p->rooms[i]);
+    for (int i = 0; i < p->n_names; i++)
+        if (!strpbrk(p->names[i], "\r\n"))
+            fprintf(f, "block = %s\n", p->names[i]);
+    for (int i = 0; i < p->n_keys; i++) {
+        char hex[65];
+        bin2hex(p->keys[i], 32, hex, sizeof(hex));
+        fprintf(f, "block_key = %s\n", hex);
+    }
+    if (fclose(f) != 0 || rename(tmp, cfg->backbone_policy_file) != 0) {
+        remove(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+int config_policy_load(mc_config_t *cfg, const uint8_t own_pub[32])
+{
+    FILE *f = fopen(cfg->backbone_policy_file, "r");
+    if (!f)
+        return -1;
+    static mc_policy_t p;                 /* ~17 KB: keep it off the stack */
+    memset(&p, 0, sizeof(p));
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *sep = strstr(line, " = ");
+        if (line[0] == '#' || !sep)
+            continue;
+        *sep = '\0';
+        const char *k = line, *v = sep + 3;
+        uint32_t u;
+        if (!strcmp(k, "version") && parse_u32(v, &u))
+            p.version = u;
+        else if (!strcmp(k, "skipped") && parse_u32(v, &u))
+            p.skipped = (int)u;
+        else if (!strcmp(k, "room") && p.n_rooms < MC_POLICY_MAX_ROOMS && strlen(v) < MC_ROOM_NAME_LEN)
+            snprintf(p.rooms[p.n_rooms++], MC_ROOM_NAME_LEN, "%s", v);
+        else if (!strcmp(k, "block") && p.n_names < MC_POLICY_MAX_BLOCKS && v[0] &&
+                 strlen(v) < MC_BLACKLIST_NAME_LEN)
+            snprintf(p.names[p.n_names++], MC_BLACKLIST_NAME_LEN, "%s", v);
+        else if (!strcmp(k, "block_key") && p.n_keys < MC_POLICY_MAX_BLOCKS &&
+                 hex2bin(v, p.keys[p.n_keys], 32) == 32)
+            p.n_keys++;
+    }
+    fclose(f);
+    if (p.version == 0)
+        return -1;
+    config_set_policy(cfg, &p, own_pub);
+    return 0;
+}
+
 int config_load(mc_config_t *cfg, const char *path)
 {
     FILE *f = fopen(path, "r");
     if (!f) {
         config_ensure_ping_channel(cfg);   /* no file: still guarantee #mesh */
+        config_policy_merge(cfg);
         return -1;
     }
 
@@ -723,6 +901,7 @@ int config_load(mc_config_t *cfg, const char *path)
     fclose(f);
 
     config_ensure_ping_channel(cfg);   /* guarantee the ping/test channel exists */
+    config_policy_merge(cfg);          /* the hub's rooms, kept across a reload */
 
     /* Nudge on the callsign/SSID convention once name + role are both final.
      * Never fatal - a bad ID is a compliance nit, not a reason to refuse to run. */
@@ -751,7 +930,8 @@ int config_save(const mc_config_t *cfg, const char *path)
         "role", "hotspot_power_high", "hotspot_power_low", "hotspot_awake", "mbox",
         "link_mode", "link_peer", "link_port",        /* link_key emitted below */
         "backbone", "backbone_host", "backbone_port", "backbone_hub_key",
-        "backbone_observe", "backbone_bridge", "backbone_rate", NULL
+        "backbone_observe", "backbone_bridge", "backbone_rate", "backbone_policy",
+        "backbone_policy_file", NULL
     };
     fprintf(f, "# MeshCore repeater configuration\n");
     for (int i = 0; KEYS[i]; i++) {
@@ -792,7 +972,8 @@ int config_save(const mc_config_t *cfg, const char *path)
      * the config file, so a "room = #x" line would be stripped to empty on load.
      * add_room re-adds the '#'. */
     for (int i = 0; i < cfg->n_rooms; i++)
-        fprintf(f, "%-18s = %s\n", "room", cfg->rooms[i][0] == '#' ? cfg->rooms[i] + 1 : cfg->rooms[i]);
+        if (!cfg->room_hub[i])         /* the hub's rooms live in backbone_policy_file */
+            fprintf(f, "%-18s = %s\n", "room", cfg->rooms[i][0] == '#' ? cfg->rooms[i] + 1 : cfg->rooms[i]);
     fclose(f);
     return 0;
 }

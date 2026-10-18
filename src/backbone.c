@@ -475,9 +475,14 @@ static void send_status(mc_backbone *bb, uint64_t now)
     jb_add(&j, ",\"airtime_ms\":{\"tx\":%llu,\"rx\":%llu}", (ull)s->tx_airtime_ms, (ull)s->rx_airtime_ms);
     jb_add(&j, ",\"neighbours\":%d", mesh_neighbor_count(m));
     jb_add(&j, ",\"backbone\":{\"observed\":%llu,\"offered\":%llu,\"injected\":%llu,"
-               "\"limited\":%llu,\"rejected\":%llu}}",
+               "\"limited\":%llu,\"rejected\":%llu}",
            (ull)bb->observed, (ull)bb->offered, (ull)bb->injected, (ull)bb->limited,
            (ull)bb->rejected);
+    if (c->backbone_policy)              /* the POLICY acknowledgement */
+        jb_add(&j, ",\"policy\":{\"version\":%u,\"rooms\":%d,\"blocks\":%d,\"skipped\":%d}",
+               c->policy.version, c->policy_rooms, c->policy.n_names + c->policy.n_keys,
+               c->policy_skipped);
+    jb_add(&j, "}");
     if (j.full) {
         log_warn("backbone: status report too large, not sent");
         return;
@@ -574,6 +579,8 @@ static void on_welcome(mc_backbone *bb, uint64_t now, const uint8_t *d, size_t l
     bb->sid = w.sid;
     bb->roles = w.roles;
     bb->seq_out = 0;
+    bb->pol_pages = 0;                                  /* a new session collects afresh */
+    bb->pol_applied_seq = 0;
     memset(&bb->rwin, 0, sizeof(bb->rwin));
     bb->keepalive_s  = clamp_iv(w.keepalive_s, 10, 120, 25);
     bb->status_s     = clamp_iv(w.status_s, 30, 3600, 60);
@@ -653,6 +660,104 @@ static void on_frame(mc_backbone *bb, uint64_t now, const uint8_t *body, size_t 
     backbone_observe(bb, frame, flen, 0, 0, BB_OBS_FROM_BACKBONE, disp);
 }
 
+/* One POLICY entry into the set being collected. A value of the wrong length or
+ * form for its kind, or an unknown kind, is skipped; one over the limits counts. */
+static void policy_add(mc_policy_t *p, uint8_t kind, const uint8_t *v, uint8_t l)
+{
+    switch (kind) {
+    case BB_POL_ROOM: {                 /* "#name": one leading '#', 2..31 bytes, no blanks */
+        if (l < 2 || l >= MC_ROOM_NAME_LEN || v[0] != '#' || v[1] == '#')
+            return;
+        for (int i = 0; i < l; i++)
+            if (v[i] <= ' ' || v[i] == 0x7F)
+                return;
+        if (p->n_rooms >= MC_POLICY_MAX_ROOMS) { p->skipped++; return; }
+        memcpy(p->rooms[p->n_rooms], v, l);
+        p->rooms[p->n_rooms++][l] = '\0';
+        return;
+    }
+    case BB_POL_BLOCK_NAME:             /* 1..31 bytes of UTF-8 */
+        if (l < 1 || l >= MC_BLACKLIST_NAME_LEN || memchr(v, 0, l))
+            return;
+        if (p->n_names >= MC_POLICY_MAX_BLOCKS) { p->skipped++; return; }
+        memcpy(p->names[p->n_names], v, l);
+        p->names[p->n_names++][l] = '\0';
+        return;
+    case BB_POL_BLOCK_KEY:
+        if (l != 32)
+            return;
+        if (p->n_keys >= MC_POLICY_MAX_BLOCKS) { p->skipped++; return; }
+        memcpy(p->keys[p->n_keys++], v, 32);
+        return;
+    default:
+        return;
+    }
+}
+
+/* Walk the entries of a page: 0 if well formed (adding them to p when given),
+ * -1 if one runs past the end (the whole page is then dropped). */
+static int policy_walk(const uint8_t *e, size_t len, mc_policy_t *p)
+{
+    for (size_t i = 0; i < len; ) {
+        if (len - i < 2 || e[i + 1] > len - i - 2)
+            return -1;
+        if (p)
+            policy_add(p, e[i], &e[i + 2], e[i + 1]);
+        i += 2u + e[i + 1];
+    }
+    return 0;
+}
+
+static void on_policy(mc_backbone *bb, uint32_t seq, const uint8_t *body, size_t blen)
+{
+    if (!bb->cfg->backbone_policy)
+        return;                                         /* opted out: the node's own lists only */
+    if (blen < 6) { bb->rejected++; return; }
+    uint32_t version = rd_u32le(body);
+    uint8_t page = body[4], pages = body[5];
+    if (version == 0 || pages == 0 || pages > BB_POL_MAX_PAGES || page == 0 || page > pages ||
+        policy_walk(&body[6], blen - 6, NULL) != 0) {
+        bb->rejected++;
+        return;
+    }
+    if (bb->pol_applied_seq && seq < bb->pol_applied_seq)
+        return;                                         /* older than the set applied: stale */
+    if (bb->pol_pages && (version != bb->pol.version || pages != bb->pol_pages)) {
+        if (seq <= bb->pol_max_seq)
+            return;                                     /* an older set: keep the newer one */
+        bb->pol_pages = 0;                              /* a newer set replaces the partial one */
+    }
+    if (!bb->pol_pages) {
+        memset(&bb->pol, 0, sizeof(bb->pol));
+        bb->pol.version = version;
+        bb->pol_pages = pages;
+        bb->pol_have = 0;
+        bb->pol_min_seq = bb->pol_max_seq = seq;
+    }
+    uint16_t bit = (uint16_t)(1u << (page - 1));
+    if (bb->pol_have & bit)
+        return;                                         /* a resent page we hold */
+    policy_walk(&body[6], blen - 6, &bb->pol);
+    bb->pol_have |= bit;
+    if (seq < bb->pol_min_seq) bb->pol_min_seq = seq;
+    if (seq > bb->pol_max_seq) bb->pol_max_seq = seq;
+    if (bb->pol_have != (uint16_t)((1u << pages) - 1))
+        return;                                         /* more pages to come */
+
+    bb->pol_applied_seq = bb->pol_min_seq;
+    bb->pol_pages = 0;
+    if (bb->pol.version != bb->cfg->policy.version) {
+        config_set_policy(bb->cfg, &bb->pol, bb->id->pub);
+        if (config_policy_save(bb->cfg) != 0)
+            log_warn("backbone: could not keep the policy in '%s'", bb->cfg->backbone_policy_file);
+        log_info("backbone: policy v%u applied - %d room(s), %d block(s)%s",
+                 bb->cfg->policy.version, bb->cfg->policy_rooms,
+                 bb->cfg->policy.n_names + bb->cfg->policy.n_keys,
+                 bb->cfg->policy_skipped ? " (some skipped: tables full)" : "");
+    }
+    backbone_status_soon(bb);                           /* acknowledge it */
+}
+
 static void on_session(mc_backbone *bb, uint64_t now, const uint8_t *d, size_t len)
 {
     uint8_t type;
@@ -672,6 +777,9 @@ static void on_session(mc_backbone *bb, uint64_t now, const uint8_t *d, size_t l
         break;
     case BB_T_FRAME:
         on_frame(bb, now, body, blen);
+        break;
+    case BB_T_POLICY:
+        on_policy(bb, seq, body, blen);
         break;
     case BB_T_BYE_DOWN: {
         uint8_t reason = blen ? body[0] : BB_BYE_SHUTDOWN;
@@ -715,7 +823,7 @@ static void read_datagrams(mc_backbone *bb, uint64_t now)
 
 /* ---- public ---- */
 
-int backbone_init(mc_backbone *bb, const mc_config_t *cfg, const mc_identity_t *id,
+int backbone_init(mc_backbone *bb, mc_config_t *cfg, const mc_identity_t *id,
                   struct mc_mesh *mesh)
 {
     memset(bb, 0, sizeof(*bb));

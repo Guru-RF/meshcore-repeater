@@ -54,6 +54,7 @@ enum {
     BB_T_BYE        = 0x1F,
     BB_T_KEEPALIVE_ACK = 0x20,  /* H->R, session MAC */
     BB_T_FRAME      = 0x21,
+    BB_T_POLICY     = 0x22,     /* H->R: central rooms and blocks */
     BB_T_BYE_DOWN   = 0x2F,
 };
 
@@ -61,6 +62,12 @@ enum {
 #define BB_ROLE_BRIDGE  0x02
 
 #define BB_OBS_FROM_BACKBONE 0x01   /* OBSERVE flag: frame came from the hub, not RF */
+
+/* POLICY entry kinds and page limit */
+#define BB_POL_ROOM        1
+#define BB_POL_BLOCK_NAME  2
+#define BB_POL_BLOCK_KEY   3
+#define BB_POL_MAX_PAGES  16
 #define BB_BRIDGE_OWN        0x01   /* BRIDGE flag: originated by this repeater */
 
 /* OBSERVE disposition: 0..3 are mesh_on_recv's own results (mesh.h). */
@@ -131,7 +138,7 @@ typedef enum {
 } bb_state_t;
 
 typedef struct mc_backbone {
-    const mc_config_t   *cfg;
+    mc_config_t         *cfg;           /* mutable: POLICY merges the hub's rooms and blocks */
     const mc_identity_t *id;
     struct mc_mesh      *mesh;      /* status/neighbours source + frame sink */
     uint8_t   hub_pub[32];
@@ -176,6 +183,13 @@ typedef struct mc_backbone {
     double    tokens;
     uint64_t  tokens_ms;
 
+    /* POLICY pages being collected into one set (docs/backbone.md) */
+    mc_policy_t pol;                /* the set being collected */
+    uint8_t   pol_pages;            /* 0 = not collecting */
+    uint16_t  pol_have;             /* bit (page-1) per page held */
+    uint32_t  pol_min_seq, pol_max_seq;   /* over the pages held */
+    uint32_t  pol_applied_seq;      /* lowest seq of the set last applied this session (0 = none) */
+
     /* counters */
     uint64_t  sessions;             /* sessions established */
     uint64_t  dgrams_out, dgrams_in;
@@ -188,7 +202,7 @@ typedef struct mc_backbone {
 
 /* Set up from config (off unless backbone = true). Returns 0, or -1 on a
  * misconfiguration (state forced OFF, reason logged). Never blocks. */
-int  backbone_init(mc_backbone *bb, const mc_config_t *cfg, const mc_identity_t *id,
+int  backbone_init(mc_backbone *bb, mc_config_t *cfg, const mc_identity_t *id,
                    struct mc_mesh *mesh);
 /* Send BYE (if up) and close. */
 void backbone_close(mc_backbone *bb);

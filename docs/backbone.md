@@ -413,8 +413,6 @@ role. Otherwise it applies its own [bridge rules](#repeater-rules).
 
 ### POLICY (`0x22`), hub → repeater, any role
 
-> **Draft:** agreed with the hub, which is building its side. Not in the repeater yet.
-
 The network's central rooms and blocked users, always as one complete set. See
 [Rooms and blocks](#rooms-and-blocks) for what a node does with them.
 
@@ -669,8 +667,6 @@ is for a repeater.
 
 ## Rooms and blocks
 
-> **Draft:** see [POLICY](#policy-0x22-hub--repeater-any-role).
-
 The hub's room admins manage the network's rooms and blocked users on the portal.
 The hub pushes them with POLICY to every node on the backbone, repeaters and
 hotspots alike.
@@ -715,7 +711,8 @@ backbone_hub_key  = <64 hex chars>   # the hub's Ed25519 public key (required)
 backbone_observe  = true             # uplink heard frames + status (default true)
 backbone_bridge   = false            # offer/transmit bridged frames (default false)
 backbone_rate     = 30               # max FRAMEs transmitted per minute
-backbone_policy   = true             # take rooms and blocks from the hub (default true; draft)
+backbone_policy   = true             # take rooms and blocks from the hub (default true)
+backbone_policy_file = backbone-policy.txt   # where the hub's last set is kept
 ```
 
 - **Allowlisting a repeater:** the hub operator needs the repeater's public key.
@@ -811,7 +808,7 @@ RESET, session 0x1a2b3c4d, seq 7, ts 1792000100 (80 bytes)
 4305e0026173c660ec68a875ccfa60912ed4a62aaa9b5cd3240240bfdd930a0f
 f8cb58c032415be8666c6764abc8040a
 
-POLICY, hub -> repeater, seq 2 (83 bytes; draft, not yet in make test):
+POLICY, hub -> repeater, seq 2 (83 bytes):
 version 1792000200, page 1 of 1, entries: room "#pra", block name "Spammer",
 block key = the repeater Ed25519 public key above
 4d4201224d3c2b1a02000000c8c0cf6a010101042370726102075370616d6d65

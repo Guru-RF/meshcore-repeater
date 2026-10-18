@@ -15,15 +15,31 @@
 #include "sx126x.h"
 #include "hal.h"
 
-#define MC_MAX_PUBLIC_CHANNELS 16   /* explicit channels + room-derived channels share this */
+#define MC_MAX_PUBLIC_CHANNELS 48   /* explicit channels + room-derived (local and hub) share this */
 #define MC_MAX_BLACKLIST       32
 #define MC_BLACKLIST_NAME_LEN  32
 #define MC_MAX_AFFINITY        16   /* several repeaters in range (redundancy / mesh) */
 #define MC_MAX_HOME            8
-#define MC_MAX_ROOMS           8    /* transport "hashtag rooms" (MeshCore regions) */
+#define MC_MAX_ROOMS           40   /* transport "hashtag rooms" (MeshCore regions), local + hub */
 #define MC_ROOM_NAME_LEN       32
 #define MC_MAX_PROBE_ALLOW     8    /* callsign patterns allowed to run `probe` */
 #define MC_NAME_PAT_LEN        32   /* >= aname[32]/MC_BLACKLIST_NAME_LEN so exact patterns match */
+#define MC_POLICY_MAX_ROOMS    32   /* backbone hub POLICY limits (docs/backbone.md) */
+#define MC_POLICY_MAX_BLOCKS   256
+
+/* The rooms and blocks the backbone hub sent (POLICY, docs/backbone.md) as one
+ * set. Kept apart from the file's own lists: merged on top of them, never saved
+ * to the config file, and kept across a reload. */
+typedef struct {
+    uint32_t version;                                     /* 0 = no set */
+    int      n_rooms;
+    char     rooms[MC_POLICY_MAX_ROOMS][MC_ROOM_NAME_LEN];  /* "#name", exactly as hashed */
+    int      n_names;
+    char     names[MC_POLICY_MAX_BLOCKS][MC_BLACKLIST_NAME_LEN];
+    int      n_keys;
+    uint8_t  keys[MC_POLICY_MAX_BLOCKS][32];              /* Ed25519 public keys */
+    int      skipped;                                     /* entries over the limits above */
+} mc_policy_t;
 
 /* Operating role: a full licensed wide-area repeater, or a personal hotspot that
  * bridges the operator's own devices to the repeater network with direction-
@@ -38,6 +54,7 @@ typedef struct {
     uint8_t  secret_len;      /* 16 (AES-128) or 32 */
     uint8_t  hash;            /* SHA256(secret, secret_len)[0] = on-air channel selector */
     bool     derived;         /* auto-derived from a #room name; not written back to file */
+    bool     hub;             /* added for a room from the backbone hub (POLICY) */
 } mc_pub_channel_t;
 
 typedef struct {
@@ -97,7 +114,15 @@ typedef struct {
      * HMAC-SHA256(room_key, payload_type||payload)[0..1] (little-endian). */
     char     rooms[MC_MAX_ROOMS][MC_ROOM_NAME_LEN];  /* normalised, includes leading '#' */
     uint8_t  room_key[MC_MAX_ROOMS][16];             /* SHA256(name)[0..15] */
+    bool     room_hub[MC_MAX_ROOMS];                 /* added from the hub's POLICY set */
     int      n_rooms;
+
+    /* ---- central rooms and blocks from the backbone hub ---- */
+    bool        backbone_policy;       /* take POLICY from the hub (default true) */
+    char        backbone_policy_file[128];  /* where the applied set is kept across restarts */
+    mc_policy_t policy;                /* the applied set (version 0 = none) */
+    int         policy_rooms;          /* hub rooms being served */
+    int         policy_skipped;        /* entries this node couldn't hold */
 
     /* ---- moderation + control interface ---- */
     char     blacklist[MC_MAX_BLACKLIST][MC_BLACKLIST_NAME_LEN]; /* ignored node names */
@@ -158,6 +183,18 @@ bool config_name_matches(const char *pattern, const char *name);
 bool config_is_home(const mc_config_t *cfg, const char *name);
 bool config_is_affinity(const mc_config_t *cfg, const char *name);
 bool config_probe_allowed(const mc_config_t *cfg, const char *name);
+
+/* Central rooms and blocks (backbone POLICY). config_set_policy takes a new set:
+ * entries that would block this node itself (its name or own_pub) are dropped
+ * and logged, then the hub rooms are merged on top of the file's rooms.
+ * config_load re-merges the kept set after a reload. */
+void config_set_policy(mc_config_t *cfg, const mc_policy_t *p, const uint8_t own_pub[32]);
+bool config_is_key_blocked(const mc_config_t *cfg, const uint8_t pub[32]);
+/* Keep / restore the applied set in backbone_policy_file. 0 = ok. */
+int  config_policy_save(const mc_config_t *cfg);
+int  config_policy_load(mc_config_t *cfg, const uint8_t own_pub[32]);
+/* ASCII-only case-insensitive equality (bytes 0x80+ compare exactly). */
+bool config_ascii_eq(const char *a, const char *b);
 
 /* Validate the node name against its role. A repeater IDs with a bare callsign;
  * a hotspot MAY append an SSID "-NN" (00..99) so one operator can run several,

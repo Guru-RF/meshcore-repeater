@@ -924,7 +924,7 @@ int mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             return MESH_RX_POLICY; /* forged - do not propagate */
         }
         mc_advert_extract(&pkt, &atype, aname, sizeof(aname));
-        if (config_is_blacklisted(m->cfg, aname)) {
+        if (config_is_blacklisted(m->cfg, aname) || config_is_key_blocked(m->cfg, pub)) {
             m->stats.blacklisted++;
             if (m->cfg->verbose)
                 log_info("[ignored] blacklisted advert '%s'", aname);

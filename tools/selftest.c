@@ -1710,6 +1710,18 @@ static void test_backbone_codec(void)
           "4d4201114d3c2b1a02000000000095ff150795bb58de03d4fb371500b0010203"
           "04789982ea2e4f120a35a9e324ab0c46b7"), "OBSERVE bytes (pkt_hash = MeshCore dedup hash)");
 
+    uint8_t pol[64]; size_t pl = 0;
+    wr_u32le(&pol[0], 1792000200u); pol[4] = 1; pol[5] = 1; pl = 6;
+    pol[pl++] = BB_POL_ROOM; pol[pl++] = 4; memcpy(&pol[pl], "#pra", 4); pl += 4;
+    pol[pl++] = BB_POL_BLOCK_NAME; pol[pl++] = 7; memcpy(&pol[pl], "Spammer", 7); pl += 7;
+    pol[pl++] = BB_POL_BLOCK_KEY; pol[pl++] = 32; memcpy(&pol[pl], rep.pub, 32); pl += 32;
+    uint8_t pd[BB_MAX_DGRAM];
+    size_t pn = bb_seal(pd, sizeof(pd), BB_T_POLICY, 0x1a2b3c4du, 2, pol, pl, kd);
+    CHECK(pn == 83 && hex_eq(pd, pn,
+          "4d4201224d3c2b1a02000000c8c0cf6a010101042370726102075370616d6d65"
+          "72032003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc866412"
+          "5531b8dfa5bd382036fa2862cbb243ebf7e7a5"), "POLICY bytes (the doc's vector)");
+
     uint8_t t; uint32_t sid, seq; const uint8_t *b; size_t blen;
     CHECK(bb_open(d, n, ku, &t, &sid, &seq, &b, &blen) == 0 && t == BB_T_OBSERVE && sid == 0x1a2b3c4du &&
           seq == 2 && blen == 21 && memcmp(b, body, 21) == 0, "session datagram opens with k_up");
@@ -1789,6 +1801,29 @@ static void hub_send_frame(fake_hub_t *h, const mc_packet_t *p, uint8_t *out, si
     body[1] = (uint8_t)n;
     memcpy(&body[10], raw, (size_t)n);
     hub_send(h, BB_T_FRAME, body, 10 + (size_t)n, out, outlen);
+}
+
+/* Seal one POLICY page (it takes the next seq) into out; send it with hub_post. */
+static size_t hub_seal_policy(fake_hub_t *h, uint32_t version, uint8_t page, uint8_t pages,
+                              const uint8_t *entries, size_t elen, uint8_t *out)
+{
+    uint8_t body[BB_MAX_DGRAM];
+    wr_u32le(body, version); body[4] = page; body[5] = pages;
+    memcpy(&body[6], entries, elen);
+    return bb_seal(out, BB_MAX_DGRAM, BB_T_POLICY, h->sid, ++h->seq_down, body, 6 + elen, h->k_down);
+}
+
+static void hub_post(fake_hub_t *h, const uint8_t *d, size_t n)
+{
+    sendto(h->fd, d, n, 0, (struct sockaddr *)&h->peer, sizeof(h->peer));
+}
+
+/* Append one POLICY entry. */
+static size_t pol_entry(uint8_t *e, size_t at, uint8_t kind, const void *v, uint8_t len)
+{
+    e[at] = kind; e[at + 1] = len;
+    memcpy(&e[at + 2], v, len);
+    return at + 2u + len;
 }
 
 static void pump(mc_backbone *bb, int ms)
@@ -1981,6 +2016,113 @@ static void test_backbone_session(void)
     }
     CHECK(bb.limited > lim0 && saw_limited, "rate limit: %llu FRAMEs refused + reported as limited",
           (unsigned long long)(bb.limited - lim0));
+
+    /* POLICY: the hub's rooms and blocks, merged on top of the node's own */
+    char pfile[64]; snprintf(pfile, sizeof(pfile), "/tmp/mc-selftest-policy-%d.txt", (int)getpid());
+    config_set(&cfg, "backbone_policy_file", pfile);
+    config_set(&cfg, "room", "ora");                 /* a local room line */
+    CHECK(cfg.backbone_policy && cfg.policy.version == 0 && cfg.n_rooms == 1,
+          "policy: on by default, no set yet, one local room");
+    int ch0 = cfg.n_public_channels;
+    uint8_t e[BB_MAX_DGRAM], pd[BB_MAX_DGRAM]; size_t el = 0, pn;
+    el = pol_entry(e, el, BB_POL_ROOM, "#pra", 4);
+    el = pol_entry(e, el, BB_POL_ROOM, "#ora", 4);             /* also a local room */
+    el = pol_entry(e, el, BB_POL_BLOCK_NAME, "Spammer", 7);
+    el = pol_entry(e, el, BB_POL_BLOCK_KEY, other.pub, 32);
+    el = pol_entry(e, el, BB_POL_BLOCK_NAME, "on0tst", 6);     /* this node itself */
+    el = pol_entry(e, el, BB_POL_BLOCK_KEY, id.pub, 32);       /* its own key */
+    el = pol_entry(e, el, 9, "future", 6);                     /* unknown kind */
+    el = pol_entry(e, el, BB_POL_BLOCK_KEY, "short", 5);       /* wrong length */
+    el = pol_entry(e, el, BB_POL_ROOM, "##x", 3);              /* two '#' */
+    pn = hub_seal_policy(&h, 100, 1, 1, e, el, pd); hub_post(&h, pd, pn);
+    r = hub_wait_type(&h, &bb, BB_T_STATUS, &body, &blen, d, sizeof(d));
+    if (r > 0) { memcpy(js, body, blen); js[blen] = 0; }
+    CHECK(cfg.policy.version == 100 && cfg.policy_rooms == 2 && cfg.n_rooms == 2 &&
+          cfg.n_public_channels == ch0 + 1 && cfg.public_channels[ch0].hub &&
+          !strcmp(cfg.public_channels[ch0].name, "#pra"),
+          "v100 applied: #pra added (room + channel), #ora served once, bad entries skipped");
+    CHECK(config_is_blacklisted(&cfg, "SPAMMER") && !config_is_blacklisted(&cfg, "Spämmer") &&
+          config_is_key_blocked(&cfg, other.pub),
+          "name block ignores ASCII case only; key block");
+    CHECK(!config_is_blacklisted(&cfg, "ON0TST") && !config_is_key_blocked(&cfg, id.pub) &&
+          cfg.policy.n_names == 1 && cfg.policy.n_keys == 1,
+          "self-block guard: blocks of its own name and key ignored");
+    CHECK(r > 0 && strstr(js, "\"policy\":{\"version\":100,\"rooms\":2,\"blocks\":2,\"skipped\":0}"),
+          "STATUS acknowledges at once: %s", strstr(js, "\"policy\"") ? strstr(js, "\"policy\"") : "-");
+
+    mc_packet_t sp; build_public_text(&cfg, "SPAMMER: buy now", &sp);
+    n = pkt_serialize(&sp, raw, sizeof(raw));
+    CHECK(mesh_on_recv(&mesh, raw, (size_t)n, -70, 20) == MESH_RX_POLICY, "blocked sender's message dropped");
+    mc_advert_info_t bi = { .type = ADV_TYPE_CHAT, .name = "Renamed" };
+    mc_packet_t badv; mc_advert_build(&badv, &other, &bi, (uint32_t)time(NULL));
+    n = pkt_serialize(&badv, raw, sizeof(raw));
+    CHECK(mesh_on_recv(&mesh, raw, (size_t)n, -70, 20) == MESH_RX_POLICY && mesh_neighbor_count(&mesh) == 0,
+          "blocked key's advert dropped, whatever its name");
+
+    char cpath[64]; snprintf(cpath, sizeof(cpath), "/tmp/mc-selftest-conf-%d.conf", (int)getpid());
+    config_save(&cfg, cpath);
+    FILE *cf = fopen(cpath, "r"); char ln[256]; int room_lines = 0; bool ora_line = false;
+    while (cf && fgets(ln, sizeof(ln), cf))
+        if (!strncmp(ln, "room ", 5)) { room_lines++; if (strstr(ln, "= ora")) ora_line = true; }
+    if (cf) fclose(cf);
+    remove(cpath);
+    CHECK(room_lines == 1 && ora_line, "config save keeps only the local room, not the hub's");
+
+    static mc_config_t kept; config_defaults(&kept);
+    snprintf(kept.name, sizeof(kept.name), "%s", "ON0TST");
+    config_set(&kept, "backbone_policy_file", pfile);
+    CHECK(config_policy_load(&kept, id.pub) == 0 && kept.policy.version == 100 && kept.policy_rooms == 2 &&
+          kept.n_rooms == 2 && config_is_blacklisted(&kept, "spammer") && config_is_key_blocked(&kept, other.pub),
+          "the applied set is kept on disk and restored at start");
+
+    /* two pages, out of order: applied only once both are in */
+    el = 0; el = pol_entry(e, el, BB_POL_ROOM, "#pra", 4);
+    uint8_t p1[BB_MAX_DGRAM], p2[BB_MAX_DGRAM]; size_t n1, n2;
+    n1 = hub_seal_policy(&h, 200, 1, 2, e, el, p1);
+    el = 0; el = pol_entry(e, el, BB_POL_ROOM, "#sysops", 7);
+    n2 = hub_seal_policy(&h, 200, 2, 2, e, el, p2);
+    hub_post(&h, p2, n2); pump(&bb, 30);
+    CHECK(cfg.policy.version == 100, "half a set is not applied");
+    hub_post(&h, p1, n1); pump(&bb, 30);
+    CHECK(cfg.policy.version == 200 && cfg.n_rooms == 3 && cfg.policy_rooms == 2 &&
+          !config_is_blacklisted(&cfg, "Spammer"),
+          "v200 (2 pages) applied: replaces v100 as a whole");
+
+    /* a delayed older set can't undo or break up a newer one */
+    el = 0; el = pol_entry(e, el, BB_POL_BLOCK_NAME, "Old", 3);
+    uint8_t old1[BB_MAX_DGRAM], old2[BB_MAX_DGRAM]; size_t o1, o2;
+    o1 = hub_seal_policy(&h, 150, 1, 1, e, el, old1);           /* sealed first: lower seq */
+    el = 0; el = pol_entry(e, el, BB_POL_BLOCK_NAME, "New", 3);
+    pn = hub_seal_policy(&h, 300, 1, 1, e, el, pd);
+    hub_post(&h, pd, pn); pump(&bb, 30);
+    hub_post(&h, old1, o1); pump(&bb, 30);
+    CHECK(cfg.policy.version == 300 && config_is_blacklisted(&cfg, "New") && !config_is_blacklisted(&cfg, "Old"),
+          "an older set arriving late is dropped");
+    o2 = hub_seal_policy(&h, 350, 1, 1, e, el, old2);           /* older than v400 below */
+    n1 = hub_seal_policy(&h, 400, 1, 2, e, el, p1);
+    n2 = hub_seal_policy(&h, 400, 2, 2, e, 0, p2);
+    hub_post(&h, p1, n1); pump(&bb, 30);
+    hub_post(&h, old2, o2); pump(&bb, 30);
+    hub_post(&h, p2, n2); pump(&bb, 30);
+    CHECK(cfg.policy.version == 400, "...nor break up a newer set being collected");
+
+    uint64_t prej = bb.rejected;
+    e[0] = BB_POL_ROOM; e[1] = 40; memcpy(&e[2], "#x", 2);      /* runs past the end */
+    pn = hub_seal_policy(&h, 450, 1, 1, e, 4, pd); hub_post(&h, pd, pn); pump(&bb, 30);
+    CHECK(cfg.policy.version == 400 && bb.rejected == prej + 1, "malformed page dropped");
+
+    pn = hub_seal_policy(&h, 500, 1, 1, e, 0, pd); hub_post(&h, pd, pn); pump(&bb, 30);
+    CHECK(cfg.policy.version == 500 && cfg.policy_rooms == 0 && cfg.n_rooms == 1 &&
+          cfg.n_public_channels == ch0 && cfg.policy.n_names == 0,
+          "empty set clears the hub's rooms and blocks, the local room stays");
+
+    cfg.backbone_policy = false;
+    el = 0; el = pol_entry(e, el, BB_POL_ROOM, "#pra", 4);
+    pn = hub_seal_policy(&h, 600, 1, 1, e, el, pd); hub_post(&h, pd, pn); pump(&bb, 30);
+    CHECK(cfg.policy.version == 500 && cfg.n_rooms == 1, "backbone_policy = false: POLICY ignored");
+    r = hub_wait_type(&h, &bb, BB_T_STATUS, &body, &blen, d, sizeof(d));   /* (sent on the timer) */
+    cfg.backbone_policy = true;
+    remove(pfile);
 
     /* RESET: a stale/forged one is ignored; a valid one makes the repeater re-register */
     uint8_t rs[BB_RESET_LEN];

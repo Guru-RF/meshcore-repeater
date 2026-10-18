@@ -117,8 +117,8 @@ static void cmd_status(cli_ctx_t *ctx)
            (unsigned long long)s->fwd_grp_public, (unsigned long long)s->fwd_denied,
            (unsigned long long)s->fwd_denied_dm, (unsigned long long)s->fwd_denied_grp,
            (unsigned long long)s->fwd_denied_other, (unsigned long long)s->grp_mac_fail);
-    printf("rooms     : %d configured  transport-flood-seen %llu  region-relayed %llu\n",
-           ctx->cfg->n_rooms, (unsigned long long)s->rx_transport_flood,
+    printf("rooms     : %d configured (%d from hub)  transport-flood-seen %llu  region-relayed %llu\n",
+           ctx->cfg->n_rooms, ctx->cfg->policy_rooms, (unsigned long long)s->rx_transport_flood,
            (unsigned long long)s->fwd_region);
     printf("ping/pong : %s on %s  ping-seen %llu  pong-sent %llu   verbose %s\n",
            ctx->cfg->ping_pong ? "on" : "off",
@@ -160,15 +160,23 @@ static void cmd_status(cli_ctx_t *ctx)
                      (unsigned long long)((b->next_try_ms - now) / 1000));
         else
             what[0] = '\0';
+        char pol[32];
+        if (!ctx->cfg->backbone_policy)
+            snprintf(pol, sizeof(pol), "policy off");
+        else if (ctx->cfg->policy.version)
+            snprintf(pol, sizeof(pol), "policy v%u", ctx->cfg->policy.version);
+        else
+            snprintf(pol, sizeof(pol), "policy none yet");
         printf("backbone  : %s %s:%u %s  sessions %llu  observed %llu offered %llu injected %llu "
-               "limited %llu rejected %llu\n",
+               "limited %llu rejected %llu  %s\n",
                backbone_state_name(b), ctx->cfg->backbone_host, ctx->cfg->backbone_port, what,
                (unsigned long long)b->sessions, (unsigned long long)b->observed,
                (unsigned long long)b->offered, (unsigned long long)b->injected,
-               (unsigned long long)b->limited, (unsigned long long)b->rejected);
+               (unsigned long long)b->limited, (unsigned long long)b->rejected, pol);
     }
-    printf("blacklist : %d entries  ignored %llu   control port %u\n",
-           ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
+    printf("blacklist : %d entries + %d from hub  ignored %llu   control port %u\n",
+           ctx->cfg->n_blacklist, ctx->cfg->policy.n_names + ctx->cfg->policy.n_keys,
+           (unsigned long long)s->blacklisted, ctx->cfg->control_port);
     if (ctx->cfg->role == ROLE_HOTSPOT) {
         char rf[96];
         uint64_t now = hal_millis();
@@ -227,8 +235,9 @@ static void cmd_channels(cli_ctx_t *ctx)
         printf("  (none - forwarding adverts only; all group + private traffic dropped)\n");
     for (int i = 0; i < c->n_public_channels; i++) {
         const mc_pub_channel_t *ch = &c->public_channels[i];
-        printf("  [%d] hash 0x%02X  %u-bit  %s\n", i, ch->hash,
-               (unsigned)(ch->secret_len * 8), ch->name[0] ? ch->name : "-");
+        printf("  [%d] hash 0x%02X  %u-bit  %s%s\n", i, ch->hash,
+               (unsigned)(ch->secret_len * 8), ch->name[0] ? ch->name : "-",
+               ch->hub ? "  (hub room)" : "");
     }
     fflush(stdout);
 }
@@ -243,6 +252,17 @@ static void cmd_blacklist(cli_ctx_t *ctx, const char *sub, const char *name)
             printf("  (empty)\n");
         for (int i = 0; i < c->n_blacklist; i++)
             printf("  %s\n", c->blacklist[i]);
+        if (c->policy.n_names + c->policy.n_keys > 0) {
+            printf("blocked by the hub (%d) - managed on the portal:\n",
+                   c->policy.n_names + c->policy.n_keys);
+            for (int i = 0; i < c->policy.n_names; i++)
+                printf("  %s\n", c->policy.names[i]);
+            for (int i = 0; i < c->policy.n_keys; i++) {
+                char hex[17];
+                bin2hex(c->policy.keys[i], 8, hex, sizeof(hex));
+                printf("  key %s...\n", hex);
+            }
+        }
         fflush(stdout);
         return;
     }
