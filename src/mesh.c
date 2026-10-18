@@ -180,11 +180,17 @@ static void learn_affinity(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE])
  *   - Group messages are classified by path: an affinity repeater in the path
  *     means it came from the mesh (downlink, forward all); otherwise it was
  *     heard locally (uplink) and is only bridged if its sender is a home device.
+ *   - A frame from the backbone hub came from the mesh as well: downlink, with
+ *     the same advertiser rule for adverts. Nothing from the hub is uplinked.
  */
 static bool hotspot_decide(mc_mesh_t *m, const mc_packet_t *pkt,
                            const char *aname, const char *grp_sender, int8_t *power)
 {
     uint8_t pt = pkt_payload_type(pkt);
+    if (m->rx_src == MESH_SRC_BACKBONE) {             /* the hub stands in for the repeater */
+        *power = m->cfg->hotspot_power_low;
+        return pt != PAYLOAD_TYPE_ADVERT || config_is_affinity(m->cfg, aname);
+    }
     if (pt == PAYLOAD_TYPE_ADVERT) {
         if (config_is_affinity(m->cfg, aname)) { *power = m->cfg->hotspot_power_low;  return true; }
         if (config_is_home(m->cfg, aname))     { *power = m->cfg->hotspot_power_high; return true; }

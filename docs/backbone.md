@@ -32,6 +32,9 @@ does without the backbone.
 | observe | repeater → hub | Every frame heard on RF with RSSI/SNR, plus periodic status and neighbour reports. Read-only. |
 | bridge | both | The repeater offers the frames it transmits; the hub sends frames for the repeater to transmit. |
 
+A personal hotspot connects the same way, with the same messages and roles. See
+[Hotspots](#hotspots) for how it uses them.
+
 ## Conventions
 
 - Integers are **little-endian**, the same as MeshCore. `u8/u16/u32` are unsigned;
@@ -330,6 +333,7 @@ the repeater's RF flood backoff.
   between two reports: duty = Δ`airtime_ms.tx` ÷ Δwall time.
 - **Omitted fields:** `lat`/`lon` are left out when the repeater has no position
   configured.
+- **`role`:** `"repeater"` or `"hotspot"` (see [Hotspots](#hotspots)).
 - **Compatibility:** receivers ignore unknown fields.
 
 ```json
@@ -530,6 +534,33 @@ The hub decides what goes where. It does not flood everything to everyone.
 8. **Warn about shared first bytes:** on HELLO, warn the operator when two
    allowlisted repeaters share their first public-key byte. The path-tail rule
    still copes, but a shared byte is worth knowing about.
+
+### Hotspots
+
+A personal hotspot (`role = hotspot`) relays only its operator's own devices
+(`home`) up to a repeater it trusts (`affinity`), and the mesh's traffic back
+down to the household at low power. On the backbone the **hub stands in for that
+repeater**, so a hotspot with no repeater in RF range still reaches the mesh.
+When a repeater is in range, the hub is a fallback for the hotspot, exactly as it
+is for a repeater.
+
+- **On the wire:** nothing differs. HELLO does not carry the role, so the hub
+  records it per key in the allowlist; STATUS reports it as `"role": "hotspot"`.
+  A hotspot's name may carry an SSID, such as `OR7F-4`.
+- **Up:** the hotspot offers what it relays from its home devices as BRIDGE, like
+  any repeater. Those floods carry the hotspot's hash, so replies route back over
+  the backbone with the [path handling](#path-handling) above.
+- **Down:** a FRAME passes the [repeater rules](#repeater-rules) and is then
+  handled like traffic that came in through an affinity repeater:
+  - transmitted at the hotspot's low (household) power, whatever the sender;
+  - an advert goes down only when the advertiser is one of the hotspot's
+    affinity repeaters, as on RF;
+  - nothing from the hub is ever transmitted at the hotspot's uplink power.
+- **Hub:** no special rules. A hotspot that shares no RF neighbour with other
+  backbone nodes is an island of its own. When it is in range of a backbone
+  repeater, the dedup and hold rules above apply as between two repeaters, and
+  the hotspot's own dedup ring drops whatever reaches it both ways. The hub may
+  narrow what it sends a hotspot by its own policy, for example by channel.
 
 ## Repeater configuration
 

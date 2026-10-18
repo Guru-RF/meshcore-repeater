@@ -233,9 +233,8 @@ int main(int argc, char **argv)
     /* IP backbone to the hub (optional). A fallback: a misconfigured or
      * unreachable hub only means no backbone, never a stopped repeater. */
     mc_backbone bb;
-    if (cfg.backbone_enable && (rx_node || cfg.role == ROLE_HOTSPOT)) {
-        log_warn("backbone: not available on a %s - backbone off",
-                 rx_node ? "split-RX node (link_mode = rx)" : "hotspot");
+    if (cfg.backbone_enable && rx_node) {
+        log_warn("backbone: not available on a split-RX node (link_mode = rx) - backbone off");
         memset(&bb, 0, sizeof(bb));                           /* BB_OFF */
         bb.fd = -1;
     } else {

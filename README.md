@@ -727,6 +727,12 @@ it. It's **off by default**. The wire protocol is specified in
   ping/pong, time, probe or `#mbox` replies here, is never sent back to the hub,
   and is capped at `backbone_rate` frames per minute.
 
+A **hotspot** can connect too. The hub then stands in for its affinity
+repeater: your home devices' traffic goes up to the hub, and frames from the hub
+go down to the household at `hotspot_power_low`. So a hotspot with no repeater
+in RF range still reaches the mesh, and one with a repeater in range gets the
+hub as a fallback.
+
 ```
 island A               internet                island B
  ~~~ RF ~~~ repeater ── UDP 4405 ── hub ── UDP 4405 ── repeater ~~~ RF ~~~

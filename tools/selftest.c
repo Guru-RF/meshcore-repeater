@@ -1094,6 +1094,36 @@ static void test_hotspot(void)
       mc_packet_t p; build_public_text(&hc, "ON4ABC-9: ping", &p);
       n = pkt_serialize(&p, raw, sizeof(raw)); mesh_on_recv(&m, raw, (size_t)n, -50, 40);
       CHECK(m.stats.pong_sent == 1, "ping/pong works in hotspot role"); }
+
+    /* 7. from the backbone hub (no repeater in RF range): downlink at LOW power
+     *    whoever the sender; adverts only for an affinity repeater; never uplinked */
+    { config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+      mc_mesh_t m; mesh_init(&m, &id, &cfg);
+      mc_packet_t p; build_public_text(&cfg, "ON4ABC-1: via the hub", &p);
+      p.path_len = 0x02; p.path[0] = 0xA1; p.path[1] = 0xB2;   /* relayed in another island */
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      int r = mesh_on_backbone(&m, raw, (size_t)n);
+      int g = grp_slot(&m);
+      CHECK(r == MESH_RX_FORWARDED && g >= 0 && m.txq[g].power_dbm == -5,
+            "hub msg (any sender) downlinked at low power");
+      build_public_text(&cfg, "ON6URE-7: echoed by the hub", &p);
+      n = pkt_serialize(&p, raw, sizeof(raw));
+      mesh_on_backbone(&m, raw, (size_t)n);
+      bool low = true;
+      for (int i = 0; i < MESH_TXQ_SIZE; i++)
+          if (m.txq[i].used && m.txq[i].power_dbm != -5) low = false;
+      CHECK(low && m.stats.fwd_flood == 2, "home device's msg from the hub goes down too, never up");
+      mc_identity_t far; mc_identity_generate(&far);
+      mc_advert_info_t info; memset(&info, 0, sizeof(info)); info.type = ADV_TYPE_REPEATER;
+      mc_packet_t adv;
+      info.name = "ON0FAR"; mc_advert_build(&adv, &far, &info, 1002);
+      n = pkt_serialize(&adv, raw, sizeof(raw));
+      CHECK(mesh_on_backbone(&m, raw, (size_t)n) == MESH_RX_POLICY && mesh_neighbor_count(&m) == 0,
+            "hub advert of a non-affinity repeater: not downlinked, no neighbour");
+      info.name = "ON0XYZ"; mc_advert_build(&adv, &far, &info, 1003);
+      n = pkt_serialize(&adv, raw, sizeof(raw));
+      CHECK(mesh_on_backbone(&m, raw, (size_t)n) == MESH_RX_FORWARDED && m.n_affinity_hash == 0,
+            "hub advert of an affinity repeater downlinked (path-hash learned from RF only)"); }
 }
 
 static void test_crypto(void)
