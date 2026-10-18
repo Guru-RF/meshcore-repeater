@@ -314,7 +314,8 @@ int main(int argc, char **argv)
         }
 
         /* 3. periodic advert (not on a pure RX node) */
-        if (!rx_node && cfg.advert_interval &&
+        /* a hotspot waking in step 1 adverts after `now` was read: don't underflow */
+        if (!rx_node && cfg.advert_interval && now > mesh.last_advert_ms &&
             now - mesh.last_advert_ms >= (uint64_t)cfg.advert_interval * 1000ull) {
             mesh_send_advert(&mesh);
             mesh.last_advert_ms = now;    /* also when deferred: a woken hotspot IDs at once */
