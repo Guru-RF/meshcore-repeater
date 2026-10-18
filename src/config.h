@@ -150,6 +150,7 @@ typedef struct {
     int      n_home;
     int8_t   hotspot_power_high; /* uplink chip dBm (household->repeater; full power to reach it) */
     int8_t   hotspot_power_low;  /* downlink chip dBm (repeater->household; lowest usable, <100 mW) */
+    uint32_t hotspot_awake;      /* s on the air after a companion is heard directly; 0 = always on */
 } mc_config_t;
 
 /* Case-insensitive name match; a trailing '*' in pattern is a prefix wildcard. */

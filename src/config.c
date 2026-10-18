@@ -96,6 +96,7 @@ void config_defaults(mc_config_t *cfg)
     cfg->n_probe_allow      = 0;
     cfg->hotspot_power_high = 22;      /* uplink: chip max ~ +30 dBm / 1 W at antenna */
     cfg->hotspot_power_low  = -9;      /* downlink: chip minimum (well under 100 mW) */
+    cfg->hotspot_awake      = 3600;    /* attended, not unmanned: silent an hour after the last companion */
 }
 
 static void trim_name(const char *in, char *out, size_t outsz);  /* fwd decl */
@@ -550,6 +551,7 @@ int config_set(mc_config_t *cfg, const char *key, const char *val)
         else cfg->hotspot_power_low = (int8_t)p;
         return 0;
     }
+    if (!strcasecmp(key, "hotspot_awake")) { if (!parse_u32(val, &u)) return -2; cfg->hotspot_awake = u; return 0; }
 
     return -1; /* unknown key */
 }
@@ -629,6 +631,7 @@ int config_get(const mc_config_t *cfg, const char *key, char *out, size_t outsz)
     if (!strcasecmp(key, "probe_allow"))      { snprintf(out, outsz, "%d entries", cfg->n_probe_allow); return 0; }
     if (!strcasecmp(key, "hotspot_power_high")){ snprintf(out, outsz, "%d", cfg->hotspot_power_high); return 0; }
     if (!strcasecmp(key, "hotspot_power_low")) { snprintf(out, outsz, "%d", cfg->hotspot_power_low); return 0; }
+    if (!strcasecmp(key, "hotspot_awake"))    { snprintf(out, outsz, "%u", cfg->hotspot_awake); return 0; }
     return -1;
 }
 
@@ -745,7 +748,7 @@ int config_save(const mc_config_t *cfg, const char *path)
         "aprs_enable", "aprs_call", "aprs_passcode", "aprs_host", "aprs_port",
         "aprs_tocall", "aprs_symbol", "aprs_node_symbol", "aprs_comment",
         "aprs_altitude", "aprs_beacon_interval", "aprs_node_rate",
-        "role", "hotspot_power_high", "hotspot_power_low", "mbox",
+        "role", "hotspot_power_high", "hotspot_power_low", "hotspot_awake", "mbox",
         "link_mode", "link_peer", "link_port",        /* link_key emitted below */
         "backbone", "backbone_host", "backbone_port", "backbone_hub_key",
         "backbone_observe", "backbone_bridge", "backbone_rate", NULL

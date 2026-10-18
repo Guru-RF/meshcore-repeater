@@ -23,6 +23,7 @@ void mesh_init(mc_mesh_t *m, const mc_identity_t *id, const mc_config_t *cfg)
     m->id = id;
     m->cfg = cfg;
     m->start_ms = hal_millis();
+    m->last_advert_ms = m->start_ms;
     mbox_init(&m->mbox);
 }
 
@@ -70,13 +71,28 @@ static void neighbor_update(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE],
     mc_advert_extract(pkt, &n->type, n->name, sizeof(n->name));
 }
 
+bool mesh_rf_silent(const mc_mesh_t *m, uint64_t now_ms)
+{
+    if (m->cfg->role != ROLE_HOTSPOT || m->cfg->hotspot_awake == 0)
+        return false;
+    return now_ms >= m->hs_awake_until_ms;
+}
+
+static void mon_pkt_drop(mc_mesh_t *m, const mc_packet_t *pkt, const char *reason);
+
 /* Queue a packet for transmission. `own` = this node originated it (advert,
  * pong, ...) rather than relaying it. Everything queued is offered to the
- * backbone hub as a bridge candidate, except frames the hub sent us. */
+ * backbone hub as a bridge candidate, except frames the hub sent us. A silent
+ * hotspot queues nothing (and so offers nothing). */
 static bool enqueue(mc_mesh_t *m, const mc_packet_t *pkt, uint8_t priority,
                     uint32_t delay_ms, int8_t power_dbm, bool own)
 {
     uint64_t now = hal_millis();
+    if (mesh_rf_silent(m, now)) {
+        m->stats.tx_silent++;
+        mon_pkt_drop(m, pkt, "hotspot: RF silent (no companion heard)");
+        return false;
+    }
     for (int i = 0; i < MESH_TXQ_SIZE; i++) {
         if (!m->txq[i].used) {
             m->txq[i].used = true;
@@ -168,6 +184,44 @@ static void learn_affinity(mc_mesh_t *m, const uint8_t pub[MC_PUB_KEY_SIZE])
     else
         log_warn("mesh: affinity hash table full (%d) - downlink from further "
                  "repeaters may be misclassified; narrow the affinity list", MC_MAX_AFFINITY);
+}
+
+/* A companion that a hotspot hears directly makes it an attended station. A
+ * companion is anyone who isn't a repeater: not an ON0 callsign (Belgian
+ * repeaters, the hub's repeater prefix), not an affinity repeater, not this node,
+ * and not a name we heard advertise as a repeater, room or sensor (another
+ * hotspot advertises as a repeater too). */
+static bool is_companion_name(const mc_mesh_t *m, const char *name)
+{
+    if (!name || !name[0] || !strncasecmp(name, "ON0", 3) ||
+        config_is_affinity(m->cfg, name) || !strcasecmp(name, m->cfg->name))
+        return false;
+    for (int i = 0; i < MESH_MAX_NEIGHBORS; i++) {
+        const mesh_neighbor_t *n = &m->neighbors[i];
+        if (n->used && n->type != ADV_TYPE_CHAT && !strcasecmp(n->name, name))
+            return false;
+    }
+    return true;
+}
+
+/* Keep a hotspot on the air after hearing a companion directly on RF (0 hops:
+ * the operator is here, not somewhere down the mesh). Waking from silence it
+ * identifies first with a self-advert. */
+static void hotspot_wake(mc_mesh_t *m, const mc_packet_t *pkt, const char *who)
+{
+    if (m->cfg->role != ROLE_HOTSPOT || m->cfg->hotspot_awake == 0 ||
+        m->rx_src != MESH_SRC_RF || pkt_path_hash_count(pkt) != 0 || !is_companion_name(m, who))
+        return;
+    uint64_t now = hal_millis();
+    bool was_silent = mesh_rf_silent(m, now);
+    m->hs_awake_until_ms = now + (uint64_t)m->cfg->hotspot_awake * 1000ull;
+    snprintf(m->hs_woken_by, sizeof(m->hs_woken_by), "%s", who);
+    if (was_silent) {
+        m->hs_silent = false;
+        log_info("hotspot: '%s' heard - on the air for %us", who, m->cfg->hotspot_awake);
+        mesh_send_advert(m);
+        backbone_status_soon(m->bb);
+    }
 }
 
 /*
@@ -488,7 +542,8 @@ static void send_pong(mc_mesh_t *m, const mc_pub_channel_t *ch, int16_t rssi, in
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
-    enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m), true);
+    if (!enqueue(m, &pkt, 1, reply_delay_ms(), own_tx_power(m), true))
+        return;
     m->stats.pong_sent++;
     log_info("mesh: ping -> pong (rssi %d snr %.1f) on channel '%s'",
              rssi, snr_q / 4.0, ch->name[0] ? ch->name : "-");
@@ -516,8 +571,8 @@ static void send_tod(mc_mesh_t *m, const char *text)
     uint8_t hash[MC_MAX_HASH_SIZE];
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);                        /* our own echo is a dup */
-    enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m), true);
-    m->stats.timeofday_sent++;
+    if (enqueue(m, &pkt, 1, hal_rng_int(0, 3) * 50, own_tx_power(m), true))
+        m->stats.timeofday_sent++;
 }
 
 #define MESH_HELP_COOLDOWN_MS  8000   /* min gap between "help" summaries (anti-spam) */
@@ -670,6 +725,11 @@ void mesh_service_probe(mc_mesh_t *m, uint64_t now_ms)
 {
     if (m->probe_remaining <= 0 || now_ms < m->probe_next_ms)
         return;
+    if (mesh_rf_silent(m, now_ms)) {
+        log_info("probe: cancelled - the hotspot went RF silent");
+        m->probe_remaining = 0;
+        return;
+    }
     m->probe_seq++;
     char txt[48];
     snprintf(txt, sizeof(txt), "probe %d/%d", m->probe_seq, m->probe_total);
@@ -754,6 +814,7 @@ static int process_public_grp(mc_mesh_t *m, const mc_packet_t *pkt,
         mon_pkt_drop(m, pkt, "blacklisted sender");
         return -1;                      /* drop: no forward, no pong */
     }
+    hotspot_wake(m, pkt, sender);       /* before any reply: a woken hotspot may answer */
 
     if (m->cfg->verbose)
         log_info("[public %s] %s%s", ch->name[0] ? ch->name : "-", (const char *)&plain[5],
@@ -875,6 +936,8 @@ int mesh_on_recv(mc_mesh_t *m, const uint8_t *raw, size_t len,
             neighbor_update(m, pub, &pkt, rssi_dbm, snr_q);
             if (m->cfg->role == ROLE_HOTSPOT && config_is_affinity(m->cfg, aname))
                 learn_affinity(m, pub);   /* remember its path-hash for downlink detection */
+            if (atype == ADV_TYPE_CHAT)
+                hotspot_wake(m, &pkt, aname);
         }
 
         double lat, lon;
@@ -1052,6 +1115,19 @@ static void mon_pkt_tx(mc_mesh_t *m, const mc_packet_t *pkt, int len_b,
 
 void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
 {
+    if (mesh_rf_silent(m, now_ms)) {
+        if (!m->hs_silent) {
+            m->hs_silent = true;
+            log_info("hotspot: RF silent until a companion is heard nearby");
+            backbone_status_soon(m->bb);
+        }
+        for (int i = 0; i < MESH_TXQ_SIZE; i++)    /* nothing queued goes out late */
+            if (m->txq[i].used) {
+                m->txq[i].used = false;
+                m->stats.tx_silent++;
+            }
+        return;
+    }
     int idx = pick_due(m, now_ms);
     if (idx < 0)
         return;
@@ -1098,6 +1174,8 @@ void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms)
 
 int mesh_send_advert(mc_mesh_t *m)
 {
+    if (mesh_rf_silent(m, hal_millis()))
+        return 1;                       /* identifies when a companion wakes it */
     mc_advert_info_t info;
     memset(&info, 0, sizeof(info));
     info.type = ADV_TYPE_REPEATER;
@@ -1117,8 +1195,10 @@ int mesh_send_advert(mc_mesh_t *m)
     pkt_calc_hash(&pkt, hash);
     seen_check_and_add(m, hash);
 
-    enqueue(m, &pkt, 0, hal_rng_int(0, 3) * 50, own_tx_power(m), true); /* small jitter */
+    if (!enqueue(m, &pkt, 0, hal_rng_int(0, 3) * 50, own_tx_power(m), true)) /* small jitter */
+        return -1;
     m->stats.adverts_sent++;
+    m->last_advert_ms = hal_millis();
     log_info("mesh: queued self-advert '%s'", m->cfg->name);
     return 0;
 }

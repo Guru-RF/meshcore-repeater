@@ -81,6 +81,7 @@ typedef struct {
     uint64_t tx_failed;       /* transmits that never completed (no TxDone) */
     uint64_t radio_resets;    /* radio re-inits after a failed transmit */
     uint64_t adverts_sent;
+    uint64_t tx_silent;       /* hotspot: packets not sent because it was RF silent */
     uint64_t tx_airtime_ms;   /* air time of completed transmits */
     uint64_t rx_airtime_ms;   /* air time of frames received on RF */
 } mesh_stats_t;
@@ -127,6 +128,13 @@ typedef struct mc_mesh {
      * their adverts, used to tell "from the mesh" (downlink) from "local" (uplink) */
     uint8_t affinity_hash[MC_MAX_AFFINITY];
     int     n_affinity_hash;
+
+    /* hotspot role: an attended station. It stays RF silent until a companion is
+     * heard directly, then transmits until hotspot_awake seconds after the last one. */
+    uint64_t hs_awake_until_ms;     /* 0 = no companion heard yet */
+    char     hs_woken_by[32];       /* the companion heard last */
+    bool     hs_silent;             /* last state logged */
+    uint64_t last_advert_ms;        /* when the last self-advert was queued */
 
     /* active coverage probe: send "probe seq/total" every interval, `remaining`
      * times, on probe_ch (copied so a config reload can't dangle it). */
@@ -186,8 +194,13 @@ void mesh_on_rx_error(mc_mesh_t *m, int kind, int16_t rssi_dbm, int8_t snr_q);
 /* Transmit any due queue entries (handles CAD/backoff). Call every loop. */
 void mesh_service_tx(mc_mesh_t *m, uint64_t now_ms);
 
-/* Build + enqueue a signed self-advert. Returns 0 on success. */
+/* Build + enqueue a signed self-advert. Returns 0 on success, 1 if a silent
+ * hotspot deferred it (it identifies when it wakes), -1 on error. */
 int  mesh_send_advert(mc_mesh_t *m);
+
+/* True while a hotspot is RF silent: no companion heard directly in the last
+ * hotspot_awake seconds. Always false for a repeater or with hotspot_awake = 0. */
+bool mesh_rf_silent(const mc_mesh_t *m, uint64_t now_ms);
 
 /* Count active neighbours. */
 int  mesh_neighbor_count(const mc_mesh_t *m);

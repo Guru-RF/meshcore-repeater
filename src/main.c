@@ -256,8 +256,7 @@ int main(int argc, char **argv)
 
     hal_led_on(true);  /* status LED: solid while running */
 
-    /* fire an initial advert shortly after start */
-    uint64_t last_advert = hal_millis();
+    /* fire an initial advert shortly after start (a silent hotspot defers it) */
     if (!rx_node && cfg.advert_interval)
         mesh_send_advert(&mesh);
 
@@ -316,9 +315,9 @@ int main(int argc, char **argv)
 
         /* 3. periodic advert (not on a pure RX node) */
         if (!rx_node && cfg.advert_interval &&
-            now - last_advert >= (uint64_t)cfg.advert_interval * 1000ull) {
+            now - mesh.last_advert_ms >= (uint64_t)cfg.advert_interval * 1000ull) {
             mesh_send_advert(&mesh);
-            last_advert = now;
+            mesh.last_advert_ms = now;    /* also when deferred: a woken hotspot IDs at once */
         }
 
         /* activity LED pulse */

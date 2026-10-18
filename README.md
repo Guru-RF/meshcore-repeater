@@ -646,7 +646,26 @@ home               = ON6URE*       # your devices (wildcard, repeatable)
 home               = ON4ABC*       # a friend's / neighbour's devices
 hotspot_power_high = 22            # uplink: full power (chip dBm; PA adds gain)
 hotspot_power_low  = -9            # downlink: lowest usable for local delivery
+hotspot_awake      = 3600          # on the air this long after a companion (0 = always)
 ```
+
+**Attended, not unmanned.** A hotspot is **RF silent** until it hears a companion
+directly. Silent means it sends nothing at all: no adverts, no relays, no replies,
+and no frames from the backbone hub.
+- **What wakes it:** a companion heard with **0 hops**, by either its advert
+  (chat type) or a message on a public channel. That means its operator is
+  nearby, not somewhere down the mesh.
+- **Who counts as a companion:** anyone who isn't a repeater. `ON0*` callsigns,
+  the affinity repeaters, and names heard advertising as a repeater, room or
+  sensor don't count. Another hotspot advertises as a repeater, so it doesn't
+  count either.
+- **When it wakes:** it identifies at once with a self-advert, then works as
+  above.
+- **When it goes silent again:** `hotspot_awake` seconds after the last
+  companion it heard. The default is an hour.
+- **`status`** shows it on the `role` line, for example
+  `rf on air 42m more ('OR7F-12' heard)` or `rf silent`, with the number of
+  packets it held back. The hub gets `"rf_silent"` in STATUS.
 
 **Naming.** A repeater IDs with a **bare callsign** (`name = ON0RFG`). A hotspot
 may append an SSID **`-NN`** (`00`–`99`, e.g. `name = ON6URE-1`) so **one operator

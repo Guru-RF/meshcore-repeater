@@ -1011,6 +1011,7 @@ static void test_hotspot(void)
     printf("[hotspot role: personal scope + power asymmetry]\n");
     mc_config_t cfg; config_defaults(&cfg);
     CHECK(config_set(&cfg, "role", "hotspot") == 0 && cfg.role == ROLE_HOTSPOT, "role=hotspot");
+    config_set(&cfg, "hotspot_awake", "0");      /* always on: scoping only (silence: below) */
     config_set(&cfg, "affinity", "ON0XYZ");
     config_set(&cfg, "home", "ON6URE*");
     config_set(&cfg, "hotspot_power_high", "10");
@@ -1124,6 +1125,117 @@ static void test_hotspot(void)
       n = pkt_serialize(&adv, raw, sizeof(raw));
       CHECK(mesh_on_backbone(&m, raw, (size_t)n) == MESH_RX_FORWARDED && m.n_affinity_hash == 0,
             "hub advert of an affinity repeater downlinked (path-hash learned from RF only)"); }
+}
+
+/* Count the queued packets of one payload type. */
+static int queued(const mc_mesh_t *m, uint8_t pt)
+{
+    int c = 0;
+    for (int i = 0; i < MESH_TXQ_SIZE; i++)
+        if (m->txq[i].used && pkt_payload_type(&m->txq[i].pkt) == pt)
+            c++;
+    return c;
+}
+
+static void test_hotspot_silent(void)
+{
+    printf("[hotspot: RF silent until a companion is heard nearby]\n");
+    mc_config_t cfg; config_defaults(&cfg);
+    config_set(&cfg, "role", "hotspot");
+    config_set(&cfg, "affinity", "ON0XYZ");
+    config_set(&cfg, "home", "ON6URE*");
+    config_set(&cfg, "hotspot_power_low", "-5");
+    config_set(&cfg, "public_channel", "izOH6cXN6mrJ5e26oRXNcg==");
+    snprintf(cfg.name, sizeof(cfg.name), "OR7F-4");
+    cfg.ping_pong = true; cfg.ping_channel[0] = '\0';
+    CHECK(cfg.hotspot_awake == 3600, "default: on the air for an hour after a companion");
+
+    mc_identity_t id; mc_identity_generate(&id);
+    sx126x_cfg_t radio; config_to_sx126x(&cfg, &radio); sx126x_init(&radio);
+    uint8_t raw[MC_MAX_TRANS_UNIT]; int n;
+    mc_identity_t aff; mc_identity_generate(&aff);
+    mc_advert_info_t info; memset(&info, 0, sizeof(info));
+    mc_packet_t p, adv;
+
+    mc_mesh_t m; mesh_init(&m, &id, &cfg);
+    CHECK(mesh_rf_silent(&m, hal_millis()) && mesh_send_advert(&m) == 1 && first_used(&m) < 0,
+          "silent at start: the start-up advert waits");
+
+    info.type = ADV_TYPE_REPEATER; info.name = "ON0XYZ";
+    mc_advert_build(&adv, &aff, &info, 1000);
+    n = pkt_serialize(&adv, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    CHECK(m.n_affinity_hash == 1 && first_used(&m) < 0 && m.stats.tx_silent == 1,
+          "affinity advert learned but not transmitted");
+
+    build_public_text(&cfg, "ON4ABC-1: via the repeater", &p);
+    p.path_len = 0x01; p.path[0] = aff.pub[0];
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    CHECK(mesh_on_recv(&m, raw, (size_t)n, -50, 40) == MESH_RX_LOCAL && first_used(&m) < 0 &&
+          mesh_rf_silent(&m, hal_millis()),
+          "relayed companion msg: not transmitted, doesn't wake (not nearby)");
+
+    build_public_text(&cfg, "ON4ABC-1: from the hub", &p);
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    CHECK(mesh_on_backbone(&m, raw, (size_t)n) == MESH_RX_LOCAL && first_used(&m) < 0 &&
+          mesh_rf_silent(&m, hal_millis()),
+          "hub frame: not transmitted, doesn't wake");
+
+    build_public_text(&cfg, "ON0XYZ: pong rssi -50dBm", &p);
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    CHECK(mesh_rf_silent(&m, hal_millis()), "a repeater heard directly (ON0*) doesn't wake");
+
+    mc_identity_t hs; mc_identity_generate(&hs);
+    info.type = ADV_TYPE_REPEATER; info.name = "OR7F-9";      /* another hotspot */
+    mc_advert_build(&adv, &hs, &info, 1001);
+    n = pkt_serialize(&adv, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    build_public_text(&cfg, "OR7F-9: time 12:00 UTC", &p);
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    CHECK(mesh_rf_silent(&m, hal_millis()), "another hotspot's message doesn't wake");
+
+    build_public_text(&cfg, "ON6URE-7: ping", &p);
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    mesh_on_recv(&m, raw, (size_t)n, -50, 40);
+    CHECK(!mesh_rf_silent(&m, hal_millis()) && !strcmp(m.hs_woken_by, "ON6URE-7"),
+          "a companion's message heard directly wakes it");
+    CHECK(queued(&m, PAYLOAD_TYPE_ADVERT) == 1 && m.stats.adverts_sent == 1,
+          "waking, it identifies with a self-advert");
+    CHECK(m.stats.pong_sent == 1 && m.stats.fwd_flood == 1,
+          "the waking message is answered and uplinked");
+
+    build_public_text(&cfg, "ON4ABC-1: via the repeater again", &p);
+    p.path_len = 0x01; p.path[0] = aff.pub[0];
+    n = pkt_serialize(&p, raw, sizeof(raw));
+    CHECK(mesh_on_recv(&m, raw, (size_t)n, -50, 40) == MESH_RX_FORWARDED,
+          "awake: traffic via the repeater goes down again");
+
+    uint64_t held = m.stats.tx_silent;
+    int used = 0;
+    for (int i = 0; i < MESH_TXQ_SIZE; i++) used += m.txq[i].used;
+    m.hs_awake_until_ms = hal_millis();          /* the hour is over */
+    mesh_service_tx(&m, hal_millis());
+    CHECK(mesh_rf_silent(&m, hal_millis()) && first_used(&m) < 0 &&
+          m.stats.tx_silent == held + (uint64_t)used && m.stats.tx_total == 0,
+          "an hour after the last companion: silent again, queue dropped unsent");
+
+    mc_mesh_t m2; mesh_init(&m2, &id, &cfg);
+    mc_identity_t comp; mc_identity_generate(&comp);
+    info.type = ADV_TYPE_CHAT; info.name = "OR7F-12";
+    mc_advert_build(&adv, &comp, &info, 1002);
+    n = pkt_serialize(&adv, raw, sizeof(raw));
+    mesh_on_recv(&m2, raw, (size_t)n, -50, 40);
+    CHECK(!mesh_rf_silent(&m2, hal_millis()) && queued(&m2, PAYLOAD_TYPE_ADVERT) == 1,
+          "a companion's advert heard directly wakes it too");
+
+    mc_config_t on = cfg; on.hotspot_awake = 0;
+    mc_mesh_t m3; mesh_init(&m3, &id, &on);
+    mc_config_t rep = cfg; rep.role = ROLE_REPEATER;
+    mc_mesh_t m4; mesh_init(&m4, &id, &rep);
+    CHECK(!mesh_rf_silent(&m3, hal_millis()) && !mesh_rf_silent(&m4, hal_millis()),
+          "hotspot_awake = 0, and any repeater: never silent");
 }
 
 static void test_crypto(void)
@@ -1917,6 +2029,7 @@ int main(void)
     test_blacklist();
     test_aprs();
     test_hotspot();
+    test_hotspot_silent();
     test_crypto();
     test_airtime();
     test_config();

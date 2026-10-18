@@ -454,6 +454,8 @@ static void send_status(mc_backbone *bb, uint64_t now)
     jb_str(&j, MC_VERSION);
     jb_add(&j, ",\"uptime\":%llu,\"role\":\"%s\"", (ull)((now - m->start_ms) / 1000),
            c->role == ROLE_HOTSPOT ? "hotspot" : "repeater");
+    if (c->role == ROLE_HOTSPOT)
+        jb_add(&j, ",\"rf_silent\":%s", mesh_rf_silent(m, now) ? "true" : "false");
     if (c->has_location)
         jb_add(&j, ",\"lat\":%.6f,\"lon\":%.6f", c->latitude, c->longitude);
     jb_add(&j, ",\"radio\":{\"freq\":%.3f,\"bw\":%g,\"sf\":%u,\"cr\":%u,\"tx_power\":%d}",
@@ -846,6 +848,12 @@ void backbone_observe(mc_backbone *bb, const uint8_t *frame, size_t len,
     memcpy(&body[14], frame, len);
     send_session(bb, BB_T_OBSERVE, body, 14 + len);
     bb->observed++;
+}
+
+void backbone_status_soon(mc_backbone *bb)
+{
+    if (bb && bb->state == BB_UP)
+        bb->next_status_ms = 0;
 }
 
 void backbone_offer(mc_backbone *bb, const uint8_t *frame, size_t len, bool own)

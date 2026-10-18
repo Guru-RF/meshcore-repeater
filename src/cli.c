@@ -1,6 +1,7 @@
 /* cli.c - local operator console. */
 #include "cli.h"
 #include "backbone.h"
+#include "hal.h"
 #include "sx126x.h"
 #include "util.h"
 #include "log.h"
@@ -168,11 +169,23 @@ static void cmd_status(cli_ctx_t *ctx)
     }
     printf("blacklist : %d entries  ignored %llu   control port %u\n",
            ctx->cfg->n_blacklist, (unsigned long long)s->blacklisted, ctx->cfg->control_port);
-    if (ctx->cfg->role == ROLE_HOTSPOT)
-        printf("role      : hotspot  affinity %d  home %d  power %d/%d dBm (up/down)\n",
+    if (ctx->cfg->role == ROLE_HOTSPOT) {
+        char rf[96];
+        uint64_t now = hal_millis();
+        const mc_mesh_t *m = ctx->mesh;
+        if (ctx->cfg->hotspot_awake == 0)
+            snprintf(rf, sizeof(rf), "always on");
+        else if (mesh_rf_silent(m, now))
+            snprintf(rf, sizeof(rf), "silent (no companion heard)  held %llu",
+                     (unsigned long long)s->tx_silent);
+        else
+            snprintf(rf, sizeof(rf), "on air %llum more ('%s' heard)  held %llu",
+                     (unsigned long long)((m->hs_awake_until_ms - now) / 60000 + 1),
+                     m->hs_woken_by, (unsigned long long)s->tx_silent);
+        printf("role      : hotspot  affinity %d  home %d  power %d/%d dBm (up/down)  rf %s\n",
                ctx->cfg->n_affinity, ctx->cfg->n_home,
-               ctx->cfg->hotspot_power_high, ctx->cfg->hotspot_power_low);
-    else
+               ctx->cfg->hotspot_power_high, ctx->cfg->hotspot_power_low, rf);
+    } else
         printf("role      : repeater\n");
     printf("tx        : sent %llu  cad-busy %llu  q-full %llu  adverts %llu  failed %llu  radio-resets %llu\n",
            (unsigned long long)s->tx_total, (unsigned long long)s->tx_cad_busy,
@@ -275,7 +288,8 @@ void cli_handle_line(cli_ctx_t *ctx, const char *line)
         if (name) { while (*name == ' ' || *name == '\t') name++; }
         cmd_blacklist(ctx, sub, name);
     } else if (!strcasecmp(cmd, "advert")) {
-        mesh_send_advert(ctx->mesh);
+        if (mesh_send_advert(ctx->mesh) == 1)
+            printf("hotspot is RF silent: it adverts when a companion is heard nearby\n");
     } else if (!strcasecmp(cmd, "probe")) {
         /* local admin trigger (no probe_allow check): a coverage/range test */
         char *a = strtok(NULL, " \t\r\n"), *b = strtok(NULL, " \t\r\n");

@@ -203,6 +203,9 @@ void backbone_service(mc_backbone *bb, uint64_t now_ms);
 void backbone_observe(mc_backbone *bb, const uint8_t *frame, size_t len,
                       int16_t rssi, int8_t snr_q, uint8_t flags, int disposition);
 void backbone_offer(mc_backbone *bb, const uint8_t *frame, size_t len, bool own);
+/* Send STATUS on the next service tick instead of at its interval (a state the
+ * hub acts on changed, such as a hotspot going RF silent or waking). */
+void backbone_status_soon(mc_backbone *bb);
 
 bool backbone_up(const mc_backbone *bb);
 const char *backbone_state_name(const mc_backbone *bb);

@@ -35,6 +35,9 @@ does without the backbone.
 A personal hotspot connects the same way, with the same messages and roles. See
 [Hotspots](#hotspots) for how it uses them.
 
+The hub also holds the network's rooms and blocked users and pushes them to every
+node. See [Rooms and blocks](#rooms-and-blocks).
+
 ## Conventions
 
 - Integers are **little-endian**, the same as MeshCore. `u8/u16/u32` are unsigned;
@@ -97,6 +100,7 @@ unknown type.
 | `0x1F` | BYE | R → H | session MAC (`k_up`) |
 | `0x20` | KEEPALIVE_ACK | H → R | session MAC (`k_down`) |
 | `0x21` | FRAME | H → R | session MAC (`k_down`) |
+| `0x22` | POLICY | H → R | session MAC (`k_down`) |
 | `0x2F` | BYE | H → R | session MAC (`k_down`) |
 
 Types `0x10`–`0x1F` always flow repeater → hub and use `k_up`. Types `0x20`–`0x2F`
@@ -334,6 +338,16 @@ the repeater's RF flood backoff.
 - **Omitted fields:** `lat`/`lon` are left out when the repeater has no position
   configured.
 - **`role`:** `"repeater"` or `"hotspot"` (see [Hotspots](#hotspots)).
+- **`rf_silent`:** hotspots only. `true` while the hotspot is RF silent because it
+  hasn't heard a companion nearby (see [Hotspots](#hotspots)).
+- **`policy`:** the [POLICY](#policy-0x22-hub--repeater-any-role) set the node
+  has applied:
+  - `version` of that set, 0 while it has none;
+  - `rooms` and `blocks` in use from it;
+  - `skipped`, the entries it could not hold.
+
+  The field is left out when the node doesn't take central policy
+  (`backbone_policy = false`).
 - **Compatibility:** receivers ignore unknown fields.
 
 ```json
@@ -350,7 +364,8 @@ the repeater's RF flood backoff.
   "airtime_ms": {"tx": 512000, "rx": 1210000},
   "neighbours": 12,
   "backbone": {"observed": 1530, "offered": 650, "injected": 40,
-               "limited": 0, "rejected": 1}
+               "limited": 0, "rejected": 1},
+  "policy": {"version": 1792000200, "rooms": 1, "blocks": 2, "skipped": 0}
 }
 ```
 
@@ -395,6 +410,87 @@ A frame for the repeater to transmit.
 
 The repeater drops FRAME, counted as rejected, when the session lacks the bridge
 role. Otherwise it applies its own [bridge rules](#repeater-rules).
+
+### POLICY (`0x22`), hub → repeater, any role
+
+> **Draft:** agreed with the hub, which is building its side. Not in the repeater yet.
+
+The network's central rooms and blocked users, always as one complete set. See
+[Rooms and blocks](#rooms-and-blocks) for what a node does with them.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | `version`, u32, nonzero: identifies this set, and changes whenever the set changes |
+| 4 | 1 | `page`, 1 to `pages` |
+| 5 | 1 | `pages`, 1–16 |
+| 6 | n | entries, back to back to the end of the body |
+
+Each entry is `kind` (u8), `len` (u8), then `len` bytes of value:
+
+| `kind` | Value | Meaning |
+|---|---|---|
+| 1 room | The room name exactly as hashed: UTF-8, one leading `#`, 2–31 bytes, case-sensitive. Example: `#pra`. | Serve this room: its hashtag channel and its transport region, both keyed `SHA256(name)[0..15]`. |
+| 2 block name | A node name: UTF-8, 1–31 bytes, matched exactly but ignoring case. | Ignore this sender's group messages (by sender name) and adverts (by advert name). |
+| 3 block key | An Ed25519 public key, 32 bytes. | Ignore adverts from this key. |
+
+**Matching a block name:**
+
+- **Case:** "ignoring case" means ASCII case folding only, `A`–`Z` against
+  `a`–`z`. Bytes 0x80 and up compare exactly. Names are UTF-8 and may hold
+  emoji.
+- **Group-message sender:** the decrypted text up to the first `": "`, in the
+  MeshCore plaintext `"sender: message"`. A message without `": "` has no sender
+  and matches no block name.
+- **Advert:** the advert's name field.
+
+**Self-block guard:** a node ignores a block entry that matches its own name or
+its own public key, and logs it. A typo by an admin can't silence a backbone
+node's own adverts and replies. The hub refuses to create a block that matches an
+allowlisted callsign or key.
+
+- **Unknown kinds:** skipped using `len`, so later versions can add kinds. An
+  entry whose `len` is wrong for its kind is skipped too.
+- **Malformed page:** an entry that runs past the end of the body invalidates
+  the whole page, and the node drops that page.
+- **Paging:** the hub splits a set into pages that each fit one datagram, at
+  most 1166 bytes of entries. It never splits an entry, and sends the pages back
+  to back. Every page of a set carries the same `version` and `pages`.
+- **Empty set:** one page with no entries. It clears the hub's earlier set.
+- **No role needed:** rooms and blocks shape a node's RF forwarding whatever
+  roles it holds, so the hub sends POLICY on every session.
+
+**The node:**
+
+1. It collects pages by `version`. A new session starts with no collection.
+2. **A different set:** a page whose `version` or `pages` differs from the set
+   being collected starts a new collection only if its `seq` is higher than that
+   of every page in the current collection. The partial collection is then
+   discarded. Otherwise the node drops the page.
+3. **Stale pages:** within a session, it also drops a page whose `seq` is lower
+   than that of every page of the set it last applied.
+
+   Together, rules 2 and 3 mean an older set delayed in the network can neither
+   undo a newer applied set nor break up a newer set being collected.
+4. Once it holds every page from 1 to `pages`, it applies the set as a whole,
+   replacing the previous hub set. It never applies part of a set.
+5. It reports the applied `version` in [STATUS](#status-0x13-repeater--hub-observe-role).
+   That is the acknowledgement.
+6. It keeps the applied set across restarts, so the rooms and blocks stay when
+   the hub is unreachable.
+
+**The hub:**
+
+- sends the current set right after a session is confirmed;
+- sends it to every session whenever the set changes;
+- sends it again when a STATUS reports a different `policy.version`, at most
+  once per `status_s` per session;
+- doesn't resend to a node whose STATUS has no `policy` field. That node doesn't
+  take central policy: older firmware, or `backbone_policy = false`.
+- sends at most 32 rooms and 256 blocks. A node applies what it can hold and
+  reports the rest as `skipped`.
+
+`version` is opaque to the node. The recommended value is the Unix time of the
+change, plus one when that equals the previous version.
 
 ### BYE (`0x1F` repeater → hub, `0x2F` hub → repeater)
 
@@ -556,11 +652,55 @@ is for a repeater.
   - an advert goes down only when the advertiser is one of the hotspot's
     affinity repeaters, as on RF;
   - nothing from the hub is ever transmitted at the hotspot's uplink power.
+- **RF silent:** a hotspot is an attended station.
+  - It transmits nothing until it hears a companion directly on RF, meaning a
+    non-repeater at 0 hops, and keeps transmitting until `hotspot_awake`
+    seconds after the last one.
+  - While silent it still observes. Each FRAME it gets is reported as
+    disposition 3 (local), and it offers nothing as BRIDGE.
+  - STATUS shows the state as `rf_silent`, and the hotspot sends a STATUS at once
+    whenever the state changes. The hub may skip FRAMEs to a silent hotspot, but
+    doesn't have to.
 - **Hub:** no special rules. A hotspot that shares no RF neighbour with other
   backbone nodes is an island of its own. When it is in range of a backbone
   repeater, the dedup and hold rules above apply as between two repeaters, and
   the hotspot's own dedup ring drops whatever reaches it both ways. The hub may
   narrow what it sends a hotspot by its own policy, for example by channel.
+
+## Rooms and blocks
+
+> **Draft:** see [POLICY](#policy-0x22-hub--repeater-any-role).
+
+The hub's room admins manage the network's rooms and blocked users on the portal.
+The hub pushes them with POLICY to every node on the backbone, repeaters and
+hotspots alike.
+
+- **Rooms:** a node serves its own `room` lines plus the hub's rooms.
+  - The hub adds rooms but can never remove a node's own. A room in both lists
+    is served once.
+  - A hub room works exactly like a `room` line. Plain group messages on its
+    hashtag channel are forwarded, after the same MAC check as every public
+    channel. Transport floods tagged for its region are relayed.
+- **Blocks:** a node ignores its own `blacklist` entries plus the hub's blocks.
+  - A blocked sender is handled like a local blacklist entry: not relayed
+    (disposition 2), not answered, and no neighbour-table entry. FRAMEs from the
+    hub get the same check. The [self-block guard](#policy-0x22-hub--repeater-any-role)
+    keeps a node from blocking itself.
+  - `blacklist remove` on the node removes only local entries.
+- **The hub applies blocks too:**
+  - it doesn't bridge a blocked sender's group messages, on the channels it can
+    decode;
+  - it doesn't bridge their adverts, matched by name or key;
+  - the portal doesn't show their messages.
+- **Reach:** blocks work only at the hub and on nodes on the backbone. Repeaters
+  that are only on RF still relay a blocked sender. When that traffic reaches a
+  backbone node over RF, the node drops it.
+- **Name blocks are weak:** a group message carries only the name the sender
+  chose, and they can change it. A key block stops the adverts of one identity.
+- **Hub unreachable:** the node keeps using the last set it applied, also
+  across a restart.
+- **Opting out:** `backbone_policy = false` makes a node ignore POLICY and forget
+  the stored set. It then serves only its own rooms and blacklist.
 
 ## Repeater configuration
 
@@ -575,6 +715,7 @@ backbone_hub_key  = <64 hex chars>   # the hub's Ed25519 public key (required)
 backbone_observe  = true             # uplink heard frames + status (default true)
 backbone_bridge   = false            # offer/transmit bridged frames (default false)
 backbone_rate     = 30               # max FRAMEs transmitted per minute
+backbone_policy   = true             # take rooms and blocks from the hub (default true; draft)
 ```
 
 - **Allowlisting a repeater:** the hub operator needs the repeater's public key.
@@ -596,6 +737,10 @@ backbone_rate     = 30               # max FRAMEs transmitted per minute
 - **Leaked hub key:** it can impersonate the hub towards repeaters. Even then,
   anything injected is limited to what each repeater's content policy and rate
   limit allow. To rotate, change `backbone_hub_key` on the repeaters.
+- **Leaked hub key and POLICY:** it can also block users on every backbone node,
+  or add rooms. It can't remove a node's own rooms or blacklist. It can't make
+  private traffic forwardable either, because a room is a hashtag channel whose
+  key anyone can derive from its name.
 - **No confidentiality:** the backbone carries what was or will be on air. Don't
   put anything else in it.
 
@@ -665,6 +810,13 @@ RESET, session 0x1a2b3c4d, seq 7, ts 1792000100 (80 bytes)
 4d4201034d3c2b1a0700000064c0cf6ad0b442eaf3ddd0afa74708d9026a7eae
 4305e0026173c660ec68a875ccfa60912ed4a62aaa9b5cd3240240bfdd930a0f
 f8cb58c032415be8666c6764abc8040a
+
+POLICY, hub -> repeater, seq 2 (83 bytes; draft, not yet in make test):
+version 1792000200, page 1 of 1, entries: room "#pra", block name "Spammer",
+block key = the repeater Ed25519 public key above
+4d4201224d3c2b1a02000000c8c0cf6a010101042370726102075370616d6d65
+72032003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc866412
+5531b8dfa5bd382036fa2862cbb243ebf7e7a5
 ```
 
 ## Versioning
