@@ -117,9 +117,12 @@ static void cmd_status(cli_ctx_t *ctx)
            (unsigned long long)s->fwd_grp_public, (unsigned long long)s->fwd_denied,
            (unsigned long long)s->fwd_denied_dm, (unsigned long long)s->fwd_denied_grp,
            (unsigned long long)s->fwd_denied_other, (unsigned long long)s->grp_mac_fail);
-    printf("rooms     : %d configured (%d from hub)  transport-flood-seen %llu  region-relayed %llu\n",
-           ctx->cfg->n_rooms, ctx->cfg->policy_rooms, (unsigned long long)s->rx_transport_flood,
-           (unsigned long long)s->fwd_region);
+    int hub_only = 0;                     /* rooms only the hub's set adds */
+    for (int i = 0; i < ctx->cfg->n_rooms; i++)
+        hub_only += ctx->cfg->room_hub[i];
+    printf("rooms     : %d configured (%d local + %d from hub)  transport-flood-seen %llu  region-relayed %llu\n",
+           ctx->cfg->n_rooms, ctx->cfg->n_rooms - hub_only, hub_only,
+           (unsigned long long)s->rx_transport_flood, (unsigned long long)s->fwd_region);
     printf("ping/pong : %s on %s  ping-seen %llu  pong-sent %llu   verbose %s\n",
            ctx->cfg->ping_pong ? "on" : "off",
            ctx->cfg->ping_channel[0] ? ctx->cfg->ping_channel : "any",
